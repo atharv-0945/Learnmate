@@ -1,0 +1,11 @@
+Classification Report: Best Tuned Model (Random Forest)
+============================================================
+
+              precision    recall  f1-score   support
+
+    Fail (0)       1.00      1.00      1.00        63
+    Pass (1)       1.00      1.00      1.00        37
+
+    accuracy                           1.00       100
+   macro avg       1.00      1.00      1.00       100
+weighted avg       1.00      1.00      1.00       100

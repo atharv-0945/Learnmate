@@ -1,0 +1,51 @@
+{
+    "project_name": "LearnMate AI - Student Exam Performance Prediction",
+    "dataset_filename": "data/student_exam_data.csv",
+    "dataset_rows": 500,
+    "features": [
+        "Study Hours",
+        "Previous Exam Score"
+    ],
+    "target": "Pass/Fail",
+    "train_test_split": {
+        "test_size": 0.2,
+        "stratified": true,
+        "random_state": 42
+    },
+    "selected_model": "Random Forest Classifier (Tuned)",
+    "best_hyperparameters": {
+        "clf__max_depth": 3,
+        "clf__min_samples_leaf": 1,
+        "clf__n_estimators": 25
+    },
+    "cross_validation_score_f1": 1.0,
+    "test_metrics": {
+        "accuracy": 1.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "roc_auc": 1.0
+    },
+    "custom_gd_metrics": {
+        "final_loss": 0.2769885920198456,
+        "weights": [
+            2.686226019292768,
+            2.144258381312969
+        ],
+        "bias": -1.4333510106287215,
+        "test_f1": 0.8266666666666667,
+        "test_accuracy": 0.87
+    },
+    "environment": {
+        "python_version": "3.14.7",
+        "scikit_learn": "1.9.1",
+        "numpy": "2.5.4",
+        "pandas": "3.0.6",
+        "joblib": "1.6.0"
+    },
+    "critical_limitations": [
+        "Dataset is synthetic with a strict axis-aligned rule: Pass if Study Hours >= 5.0 and Previous Exam Score >= 60.0.",
+        "Perfect 1.0 test performance on tree models reflects synthetic purity rather than real-world human student behavior.",
+        "Model outputs are statistical estimates based on two features and must NOT replace teacher judgment or actual academic diagnosis."
+    ]
+}

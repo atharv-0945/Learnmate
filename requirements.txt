@@ -1,0 +1,14 @@
+# LearnMate AI - Machine Learning Environment Requirements
+# Compatible with Python >= 3.10, 3.11, 3.12, 3.13, 3.14
+
+numpy>=2.0.0
+pandas>=2.2.0
+scipy>=1.13.0
+scikit-learn>=1.5.0
+matplotlib>=3.9.0
+seaborn>=0.13.0
+joblib>=1.4.0
+jupyter>=1.0.0
+ipykernel>=6.29.0
+nbformat>=5.9.0
+nbconvert>=7.16.0

@@ -1,0 +1,44 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node modules & frontend builds
+node_modules/
+**/node_modules/
+dist/
+dist-ssr/
+build/
+*.local
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Testing & coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local database & uploaded documents
+*.db
+*.sqlite
+*.sqlite3
+uploads/
+**/uploads/
+
+# Environment variables & secrets (CRITICAL: never commit real API keys)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# IDE, OS, & Logs
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+

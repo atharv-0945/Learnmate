@@ -1,0 +1,894 @@
+/* LandingPage.css – UX Pilot Website Aesthetic for LearnMate AI */
+
+/* Root theme variables matching UX Pilot */
+.ux-landing {
+  --lp-bg: #f5f5f0;
+  --lp-surface: #fbf9f4;
+  --lp-surface-container: #efeee9;
+  --lp-surface-container-low: #f5f4ef;
+  --lp-surface-container-high: #e9e8e3;
+  --lp-surface-lowest: #ffffff;
+  --lp-on-surface: #181916;
+  --lp-secondary: #5a5b57;
+  --lp-outline: #747a60;
+  --lp-outline-variant: #c8ccb5;
+  --lp-border-subtle: #dcdbd3;
+  
+  /* UX Pilot signature lime green accent */
+  --lp-accent: #ccff00;
+  --lp-accent-hover: #beed00;
+  --lp-accent-deep: #475a00;
+  
+  /* Fonts */
+  --font-headline: 'Syne', sans-serif;
+  --font-body: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Space Mono', monospace;
+
+  background-color: var(--lp-bg);
+  color: var(--lp-on-surface);
+  font-family: var(--font-body);
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle drafting grid background */
+.ux-landing .bg-drafting-grid {
+  background-image: 
+    linear-gradient(to right, rgba(24, 25, 22, 0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(24, 25, 22, 0.045) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* Architectural vertical ruled lines */
+.ux-landing .architectural-grid {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  opacity: 0.35;
+}
+
+.ux-landing .architectural-grid .grid-line {
+  width: 1px;
+  height: 100%;
+  background-color: var(--lp-outline-variant);
+}
+
+@media (max-width: 768px) {
+  .ux-landing .architectural-grid .grid-line.hidden-mobile {
+    display: none;
+  }
+}
+
+/* Ruler tickmarks */
+.ux-landing .ruler-tick-y {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--lp-outline) 0px,
+    var(--lp-outline) 1px,
+    transparent 1px,
+    transparent 24px
+  );
+}
+
+/* Retro-technical Lime Green CTA Button */
+.ux-landing .btn-lime-cta {
+  background-color: var(--lp-accent);
+  color: var(--lp-on-surface);
+  font-family: var(--font-headline);
+  font-weight: 800;
+  border: 1.5px solid var(--lp-on-surface);
+  border-radius: 4px;
+  padding: 0.65rem 1.4rem;
+  font-size: 0.95rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  text-decoration: none;
+  box-shadow: 2px 2px 0px var(--lp-on-surface);
+  transition: transform 0.1s ease, box-shadow 0.1s ease, background-color 0.15s ease;
+  user-select: none;
+}
+
+.ux-landing .btn-lime-cta:hover {
+  background-color: var(--lp-accent-hover);
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0px var(--lp-on-surface);
+}
+
+.ux-landing .btn-lime-cta:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0px 0px 0px var(--lp-on-surface);
+}
+
+.ux-landing .btn-lime-cta.hero-btn {
+  padding: 0.9rem 2.2rem;
+  font-size: 1.05rem;
+  box-shadow: 3px 3px 0px var(--lp-on-surface);
+}
+
+/* Corner bracket frames */
+.ux-landing .corner-frame {
+  position: relative;
+  border: 1px solid var(--lp-outline-variant);
+  background-color: transparent;
+  transition: border-color 0.2s ease;
+}
+
+.ux-landing .corner-frame:hover {
+  border-color: var(--lp-on-surface);
+}
+
+.ux-landing .corner-bracket {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1;
+  color: var(--lp-on-surface);
+  user-select: none;
+  pointer-events: none;
+}
+
+.ux-landing .corner-bracket.top-left {
+  top: -2px;
+  left: -2px;
+}
+
+.ux-landing .corner-bracket.top-right {
+  top: -2px;
+  right: -2px;
+}
+
+.ux-landing .corner-bracket.bottom-left {
+  bottom: -2px;
+  left: -2px;
+}
+
+.ux-landing .corner-bracket.bottom-right {
+  bottom: -2px;
+  right: -2px;
+}
+
+/* Monospaced technical tags */
+.ux-landing .tag-mono {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lp-secondary);
+}
+
+/* Header */
+.ux-landing .lp-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  background-color: rgba(245, 245, 240, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--lp-border-subtle);
+}
+
+.ux-landing .lp-header-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ux-landing .lp-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  text-decoration: none;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .lp-brand-icon {
+  width: 28px;
+  height: 28px;
+  background-color: var(--lp-on-surface);
+  color: var(--lp-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.85rem;
+  border: 1px solid var(--lp-on-surface);
+  transition: all 0.2s ease;
+}
+
+.ux-landing .lp-brand:hover .lp-brand-icon {
+  background-color: var(--lp-accent);
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .lp-brand-title {
+  font-family: var(--font-headline);
+  font-weight: 800;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.ux-landing .lp-brand-sys {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--lp-secondary);
+  margin-left: 0.25rem;
+}
+
+/* Hero Section */
+.ux-landing .lp-hero {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 4.5rem 1.5rem 4rem;
+  text-align: center;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.85rem;
+  background-color: var(--lp-surface-container);
+  border: 1px solid var(--lp-outline-variant);
+  border-radius: 2px;
+  margin-bottom: 1.75rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--lp-secondary);
+}
+
+.ux-landing .lp-hero-headline {
+  font-family: var(--font-headline);
+  font-weight: 900;
+  font-size: clamp(2.3rem, 6.2vw, 4.4rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+  color: var(--lp-on-surface);
+  max-width: 960px;
+  margin: 0 auto 1.5rem;
+}
+
+.ux-landing .lp-hero-subtitle {
+  font-size: clamp(1.05rem, 2vw, 1.25rem);
+  color: var(--lp-secondary);
+  max-width: 680px;
+  margin: 0 auto 2.25rem;
+  line-height: 1.55;
+  font-weight: 400;
+}
+
+.ux-landing .lp-hero-cta-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.ux-landing .lp-hero-tagline {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--lp-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Social proof ticker strip */
+.ux-landing .lp-ticker-strip {
+  max-width: 1280px;
+  margin: 0 auto 4.5rem;
+  padding: 0 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-ticker-inner {
+  border: 1px solid var(--lp-outline-variant);
+  background-color: var(--lp-surface-container-low);
+  padding: 0.85rem 1.25rem;
+  border-radius: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+@media (min-width: 768px) {
+  .ux-landing .lp-ticker-inner {
+    flex-direction: row;
+    gap: 1.5rem;
+  }
+}
+
+.ux-landing .lp-ticker-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--lp-secondary);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ux-landing .lp-ticker-label .pulse-dot {
+  width: 8px;
+  height: 8px;
+  background-color: var(--lp-accent);
+  border: 1px solid var(--lp-on-surface);
+  border-radius: 1px;
+}
+
+.ux-landing .lp-ticker-items {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem 0.85rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .lp-ticker-dot {
+  color: var(--lp-outline-variant);
+  user-select: none;
+}
+
+/* Feature Highlight Cards */
+.ux-landing .lp-features-section {
+  max-width: 1280px;
+  margin: 0 auto 5rem;
+  padding: 0 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-features-grid {
+  display: grid;
+  grid-template-columns: repeat(1, 1fr);
+  gap: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .ux-landing .lp-features-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.ux-landing .lp-feature-card {
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 230px;
+}
+
+.ux-landing .lp-feature-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+}
+
+.ux-landing .lp-feature-icon {
+  color: var(--lp-on-surface);
+  display: flex;
+  align-items: center;
+}
+
+.ux-landing .lp-feature-title {
+  font-family: var(--font-headline);
+  font-weight: 800;
+  font-size: 1.35rem;
+  color: var(--lp-on-surface);
+  margin-bottom: 0.5rem;
+  letter-spacing: -0.01em;
+}
+
+.ux-landing .lp-feature-desc {
+  color: var(--lp-secondary);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.ux-landing .lp-feature-card-footer {
+  margin-top: 1.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--lp-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--lp-secondary);
+  letter-spacing: 0.05em;
+}
+
+/* Testimonials Section */
+.ux-landing .lp-testimonials-section {
+  max-width: 1280px;
+  margin: 0 auto 5.5rem;
+  padding: 0 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-testimonials-header {
+  margin-bottom: 2rem;
+}
+
+.ux-landing .lp-testimonials-headline {
+  font-family: var(--font-headline);
+  font-weight: 800;
+  font-size: clamp(1.6rem, 3.5vw, 2.3rem);
+  letter-spacing: -0.02em;
+  color: var(--lp-on-surface);
+  margin-top: 0.35rem;
+}
+
+.ux-landing .lp-testimonials-grid {
+  display: grid;
+  grid-template-columns: repeat(1, 1fr);
+  gap: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .ux-landing .lp-testimonials-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.ux-landing .lp-quote-card {
+  padding: 1.75rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 220px;
+}
+
+.ux-landing .lp-quote-text {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  color: var(--lp-on-surface);
+  margin-bottom: 1.5rem;
+  font-style: italic;
+}
+
+.ux-landing .lp-quote-author-wrap {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--lp-outline-variant);
+}
+
+.ux-landing .lp-quote-author {
+  font-family: var(--font-headline);
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .lp-quote-exam {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--lp-secondary);
+  text-transform: uppercase;
+  margin-top: 0.15rem;
+}
+
+/* Final CTA Section & Dashboard Mockup */
+.ux-landing .lp-final-cta-section {
+  max-width: 1280px;
+  margin: 0 auto 5.5rem;
+  padding: 0 1.5rem;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-cta-outer-frame {
+  position: relative;
+  border: 1.5px solid var(--lp-on-surface);
+  background-color: var(--lp-surface-container-low);
+  padding: 2.5rem 1.5rem 2rem;
+  border-radius: 3px;
+}
+
+@media (min-width: 768px) {
+  .ux-landing .lp-cta-outer-frame {
+    padding: 3.5rem 2.5rem 2.5rem;
+  }
+}
+
+.ux-landing .crosshair-corner {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: bold;
+  color: var(--lp-on-surface);
+  line-height: 1;
+  pointer-events: none;
+}
+
+.ux-landing .crosshair-corner.top-left {
+  top: -7px;
+  left: -6px;
+}
+
+.ux-landing .crosshair-corner.top-right {
+  top: -7px;
+  right: -6px;
+}
+
+.ux-landing .crosshair-corner.bottom-left {
+  bottom: -7px;
+  left: -6px;
+}
+
+.ux-landing .crosshair-corner.bottom-right {
+  bottom: -7px;
+  right: -6px;
+}
+
+.ux-landing .lp-final-cta-content {
+  text-align: center;
+  max-width: 700px;
+  margin: 0 auto 2.5rem;
+}
+
+.ux-landing .lp-final-headline {
+  font-family: var(--font-headline);
+  font-weight: 900;
+  font-size: clamp(1.8rem, 4vw, 2.7rem);
+  text-transform: uppercase;
+  letter-spacing: -0.025em;
+  color: var(--lp-on-surface);
+  margin: 0.5rem 0 0.85rem;
+}
+
+.ux-landing .lp-final-desc {
+  color: var(--lp-secondary);
+  font-size: 1.05rem;
+  margin-bottom: 1.75rem;
+}
+
+.ux-landing .mockup-annotation-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--lp-secondary);
+  margin-bottom: 0.65rem;
+  padding: 0 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .ux-landing .mockup-annotation-line {
+    flex-direction: column;
+    gap: 0.25rem;
+    align-items: flex-start;
+  }
+}
+
+/* Lavender/technical container mirroring UX Pilot viewport */
+.ux-landing .mockup-viewport-frame {
+  border: 1.5px solid var(--lp-on-surface);
+  background-color: #e9e4f5;
+  padding: 0.75rem;
+  border-radius: 3px;
+}
+
+@media (min-width: 640px) {
+  .ux-landing .mockup-viewport-frame {
+    padding: 1.25rem;
+  }
+}
+
+.ux-landing .mockup-window {
+  background-color: var(--lp-surface-lowest);
+  border: 1.5px solid var(--lp-on-surface);
+  border-radius: 2px;
+  padding: 1.25rem;
+  box-shadow: 2px 2px 0px var(--lp-on-surface);
+}
+
+.ux-landing .mockup-window-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 1rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--lp-border-subtle);
+}
+
+.ux-landing .window-dots {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.ux-landing .window-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--lp-on-surface);
+}
+
+.ux-landing .window-dot.filled {
+  background-color: var(--lp-on-surface);
+}
+
+.ux-landing .window-dot.outline {
+  background-color: transparent;
+}
+
+.ux-landing .window-title {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--lp-on-surface);
+  margin-left: 0.5rem;
+}
+
+.ux-landing .window-badge {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  background-color: var(--lp-accent);
+  color: var(--lp-on-surface);
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--lp-on-surface);
+  border-radius: 2px;
+}
+
+/* Mockup Grid */
+.ux-landing .mockup-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+
+@media (min-width: 992px) {
+  .ux-landing .mockup-grid {
+    grid-template-columns: 7fr 5fr;
+  }
+}
+
+.ux-landing .mockup-card {
+  border: 1px solid var(--lp-border-subtle);
+  background-color: var(--lp-surface);
+  padding: 1.15rem;
+  border-radius: 2px;
+}
+
+.ux-landing .mockup-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.ux-landing .schedule-item {
+  padding: 0.65rem 0.85rem;
+  background-color: var(--lp-surface-lowest);
+  border: 1px solid var(--lp-border-subtle);
+  border-left: 4px solid var(--lp-on-surface);
+  margin-bottom: 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.ux-landing .schedule-item.active {
+  border-left-color: var(--lp-accent);
+}
+
+.ux-landing .schedule-title {
+  font-weight: 700;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .schedule-sub {
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  color: var(--lp-secondary);
+  margin-top: 0.15rem;
+}
+
+.ux-landing .schedule-status {
+  background-color: var(--lp-surface-container);
+  border: 1px solid var(--lp-outline-variant);
+  padding: 0.15rem 0.45rem;
+  border-radius: 2px;
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.ux-landing .readiness-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ux-landing .readiness-dial-value {
+  font-family: var(--font-headline);
+  font-size: 2.75rem;
+  font-weight: 900;
+  line-height: 1;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .readiness-badge-circle {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  border: 3.5px solid var(--lp-accent);
+  border-top-color: var(--lp-on-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.ux-landing .quiz-preview-snippet {
+  background-color: var(--lp-surface-container-low);
+  border: 1px solid var(--lp-outline-variant);
+  padding: 0.75rem;
+  border-radius: 2px;
+  font-style: italic;
+  font-size: 0.82rem;
+  margin: 0.65rem 0;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .mastery-bar-track {
+  width: 100%;
+  height: 6px;
+  background-color: var(--lp-surface-container-high);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-top: 0.4rem;
+}
+
+.ux-landing .mastery-bar-fill {
+  height: 100%;
+  background-color: var(--lp-accent);
+  border-right: 1px solid var(--lp-on-surface);
+}
+
+/* Minimal Footer */
+.ux-landing .lp-footer {
+  width: 100%;
+  border-top: 1px solid var(--lp-outline-variant);
+  background-color: var(--lp-surface-container-low);
+  padding: 2.25rem 0;
+  position: relative;
+  z-index: 2;
+}
+
+.ux-landing .lp-footer-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+}
+
+@media (min-width: 768px) {
+  .ux-landing .lp-footer-inner {
+    flex-direction: row;
+    gap: 2rem;
+  }
+}
+
+.ux-landing .lp-footer-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-headline);
+  font-weight: 800;
+  font-size: 1.15rem;
+  color: var(--lp-on-surface);
+}
+
+.ux-landing .lp-footer-logo-badge {
+  width: 22px;
+  height: 22px;
+  background-color: var(--lp-on-surface);
+  color: var(--lp-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.ux-landing .lp-footer-copyright {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--lp-secondary);
+}
+
+.ux-landing .lp-footer-links {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--lp-secondary);
+}
+
+.ux-landing .lp-footer-link {
+  color: var(--lp-secondary);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+
+.ux-landing .lp-footer-link:hover {
+  color: var(--lp-on-surface);
+  text-decoration: underline;
+}
+
+/* Workspace return banner when in app mode */
+.workspace-return-banner {
+  background-color: var(--lp-on-surface, #181916);
+  color: #f5f5f0;
+  padding: 0.45rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: 'Space Mono', monospace;
+  font-size: 0.75rem;
+  z-index: 100;
+  position: relative;
+}
+
+.workspace-return-btn {
+  background-color: #ccff00;
+  color: #181916;
+  border: 1px solid #181916;
+  padding: 0.2rem 0.7rem;
+  font-family: 'Space Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 2px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
