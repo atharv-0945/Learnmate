@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import io
 import json
+from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -15,7 +17,7 @@ from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,8 +26,18 @@ import config
 from db.session import init_db, get_db
 from db.models import User, Subject, Topic, Session, Quiz, QuizAttempt, FlashcardSet, Flashcard, Doubt
 from services.mastery import confidence_to_theta, theta_to_confidence, update_theta
-from services.planner import build_plan, should_replan
-from services.predictor import predict, load_model
+from services.planner import build_plan, should_replan, schedule_count_for_subject
+from services.predictor import (
+    predict,
+    load_model,
+    warmup,
+    session_suggestion,
+    skip_impact,
+    build_user_readiness,
+    to_percent,
+    visualiser_overview,
+    visualiser_state,
+)
 from services.ml_analyzer import analyze_user_weaknesses, apply_dynamic_timetable_update, add_subject_with_topics
 import services.llm as llm_service
 import services.doubt_solver as doubt_solver
@@ -33,7 +45,14 @@ import services.doubt_solver as doubt_solver
 # Ensure DB is initialized
 init_db()
 
-app = FastAPI(title="LearnMate API", version="2.0")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    warmup()
+    yield
+
+
+app = FastAPI(title="LearnMate API", version="2.0", lifespan=lifespan)
 
 # Enable CORS for local Vite dev server
 app.add_middleware(
@@ -64,6 +83,98 @@ def _get_or_create_user(db):
     return user
 
 
+def _sessions_by_subject(db, user_id: int) -> dict:
+    grouped = defaultdict(list)
+    for sess in db.query(Session).filter(Session.user_id == user_id).all():
+        grouped[sess.subject_id].append(sess)
+    return grouped
+
+
+def _readiness_payload(db, user) -> dict:
+    subjects = db.query(Subject).filter(Subject.user_id == user.id).all()
+    grouped = _sessions_by_subject(db, user.id)
+    raw = build_user_readiness(
+        subjects,
+        grouped,
+        user.session_min or config.DEFAULT_SESSION_MINUTES,
+        fallback_previous_score=user.prev_exam_score,
+    )
+    subjects_out = []
+    for row in raw.get("subjects", []):
+        subjects_out.append({
+            **row,
+            "pass_probability": to_percent(row.get("pass_probability")),
+        })
+
+    pass_threshold = round(config.VISUALISER_DECISION_THRESHOLD * 100, 1)
+    scored = [row for row in subjects_out if row.get("pass_probability") is not None]
+    limiting = min(scored, key=lambda row: row["pass_probability"]) if scored else None
+    above = sum(1 for row in scored if row["pass_probability"] >= pass_threshold)
+
+    if not subjects_out:
+        note = "Add subjects with a previous score to estimate readiness."
+    elif not scored:
+        note = "Add a previous score to your subjects to estimate readiness."
+    elif limiting and limiting["pass_probability"] < pass_threshold:
+        name = limiting.get("subject_name") or "A subject"
+        pct = round(limiting["pass_probability"], 1)
+        scheduled = float(limiting.get("scheduled_hours") or 0.0)
+        benchmark = limiting.get("benchmark_hours")
+        score = limiting.get("previous_score")
+        if benchmark is not None and scheduled + 0.05 < float(benchmark):
+            need = max(0.5, round(float(benchmark) - scheduled, 1))
+            note = (
+                f"{name} is the bottleneck at {pct}% — add {need} more planned "
+                f"hours (currently {scheduled:g}/{float(benchmark):g} h)."
+            )
+        elif score is not None and float(score) < config.PASS_TARGET_PERCENTAGE:
+            note = (
+                f"{name} is the bottleneck at {pct}% because its previous score "
+                f"({round(float(score))}) is below the dataset's "
+                f"{round(config.PASS_TARGET_PERCENTAGE)}% pass mark."
+            )
+        else:
+            note = (
+                f"{name} is the bottleneck at {pct}%; add study time or run "
+                "Smart Optimize to lift it."
+            )
+    elif above == len(scored):
+        note = (
+            f"All {len(scored)} subjects are above the {round(pass_threshold)}% "
+            "pass threshold — keep the plan balanced."
+        )
+    else:
+        note = (
+            f"{above}/{len(scored)} subjects are above the "
+            f"{round(pass_threshold)}% pass threshold; "
+            f"{limiting['subject_name']} is lowest at "
+            f"{round(limiting['pass_probability'])}%."
+        )
+
+    return {
+        "model_available": raw.get("model_available", False),
+        "overall_pass_probability": to_percent(raw.get("overall_pass_probability")),
+        "subjects": subjects_out,
+        "pass_threshold": pass_threshold,
+        "subjects_scored": len(scored),
+        "subjects_above_pass": above,
+        "limiting_subject": (
+            {
+                "subject_id": limiting.get("subject_id"),
+                "subject_name": limiting.get("subject_name"),
+                "pass_probability": limiting.get("pass_probability"),
+                "scheduled_hours": limiting.get("scheduled_hours"),
+                "benchmark_hours": limiting.get("benchmark_hours"),
+                "previous_score": limiting.get("previous_score"),
+            }
+            if limiting
+            else None
+        ),
+        "note": note,
+        "warning": None if raw.get("model_available") else "Pass estimates unavailable — the trained model did not load.",
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 1. System Status & Diagnostics
 # ─────────────────────────────────────────────────────────────────────────────
@@ -71,11 +182,19 @@ def _get_or_create_user(db):
 @app.get("/api/status")
 def get_system_status():
     model = load_model()
+    gemini = llm_service.gemini_status()
     return {
         "ml_model_active": model is not None,
         "ml_model_name": "Random Forest Classifier" if model is not None else "Not Found",
-        "gemini_active": config.GEMINI_ENABLED,
-        "gemini_model": config.GEMINI_MODEL,
+        # gemini_active stays true when a key is present (backwards compatible).
+        # gemini_verified only becomes true after a successful Gemini call.
+        "gemini_active": gemini["configured"],
+        "gemini_configured": gemini["configured"],
+        "gemini_verified": bool(gemini["active_model"]),
+        "gemini_model": gemini["preferred_model"],
+        "gemini_active_model": gemini["active_model"],
+        "gemini_fallback_models": list(getattr(config, "GEMINI_FALLBACK_MODELS", [])),
+        "gemini_last_error": gemini["last_error"],
         "groq_active": config.GROQ_ENABLED,
         "groq_model": config.GROQ_MODEL,
         "api_status": "online",
@@ -148,6 +267,7 @@ def get_dashboard():
         user = _get_or_create_user(db)
         subjects = db.query(Subject).filter(Subject.user_id == user.id).all()
         topics = db.query(Topic).filter(Topic.user_id == user.id).all()
+        all_sessions = db.query(Session).filter(Session.user_id == user.id).all()
 
         today_str = date.today().isoformat()
         today_sessions = (
@@ -161,19 +281,9 @@ def get_dashboard():
             .all()
         )
 
-        completed_sessions = (
-            db.query(Session)
-            .filter(Session.user_id == user.id, Session.status == "completed")
-            .count()
-        )
+        completed_sessions = sum(1 for s in all_sessions if s.status == "completed")
 
-        # ML pass prediction
-        study_h = user.weekly_study_hours or 8.0
-        prev_s = user.prev_exam_score or 68.0
-        model = load_model()
-        pred_res = predict(model, study_h, prev_s)
-        p_val = pred_res.get("pass_probability")
-        pass_prob = round(p_val * 100, 1) if p_val is not None else 75.0
+        readiness = _readiness_payload(db, user)
 
         # Run ML weakness analysis
         ml_res = analyze_user_weaknesses(db, user.id)
@@ -186,7 +296,12 @@ def get_dashboard():
             top = db.get(Topic, s.topic_id) if s.topic_id else None
             sessions_data.append({
                 "id": s.id,
+                "subject_id": s.subject_id,
+                "scheduled_start": s.scheduled_start,
+                "scheduled_end": s.scheduled_end,
                 "time": s.scheduled_start[11:16],
+                "start_time": s.scheduled_start[11:16],
+                "end_time": s.scheduled_end[11:16] if s.scheduled_end else None,
                 "topic_name": top.name if top else "General Study",
                 "subject_name": sub.name if sub else "—",
                 "duration_min": s.duration_min,
@@ -200,14 +315,65 @@ def get_dashboard():
             confs = [theta_to_confidence(t.theta or 0.0) * 100 for t in topics]
             avg_mastery = round(sum(confs) / len(confs), 1)
 
+        # Real syllabus coverage: how many distinct topics appear in the plan.
+        topics_in_plan = len({s.topic_id for s in all_sessions if s.topic_id})
+        syllabus_progress = round((topics_in_plan / len(topics)) * 100, 1) if topics else 0.0
+        planned_minutes = sum(
+            s.duration_min or 0 for s in all_sessions if s.status in ("scheduled", "completed")
+        )
+
+        # Next future slot, so an evening visit still shows what comes next
+        # instead of pretending the timetable is empty.
+        now_iso = datetime.now(timezone.utc).isoformat()
+        next_sess = (
+            db.query(Session)
+            .filter(
+                Session.user_id == user.id,
+                Session.status == "scheduled",
+                Session.scheduled_start >= now_iso,
+            )
+            .order_by(Session.scheduled_start)
+            .first()
+        )
+        next_session = None
+        if next_sess:
+            next_subject = db.get(Subject, next_sess.subject_id)
+            next_topic = db.get(Topic, next_sess.topic_id) if next_sess.topic_id else None
+            next_session = {
+                "id": next_sess.id,
+                "date": next_sess.scheduled_start[:10],
+                "start_time": next_sess.scheduled_start[11:16],
+                "end_time": next_sess.scheduled_end[11:16] if next_sess.scheduled_end else None,
+                "subject_name": next_subject.name if next_subject else "—",
+                "topic_name": next_topic.name if next_topic else "General Study",
+            }
+
         return {
             "user_name": user.name,
-            "pass_probability": pass_prob,
+            "user": {
+                "name": user.name,
+                "weekly_study_hours": user.weekly_study_hours,
+                "prev_exam_score": user.prev_exam_score,
+                "session_min": user.session_min,
+                "break_min": user.break_min,
+                "hours_per_day": user.hours_per_day,
+                "study_days": [d.strip() for d in user.study_days.split(",") if d.strip()],
+            },
+            "pass_probability": readiness.get("overall_pass_probability"),
+            "readiness": readiness,
+            "thresholds": {
+                "pass": round(config.VISUALISER_DECISION_THRESHOLD * 100, 1),
+                "on_track": config.PASS_TARGET_PERCENTAGE,
+            },
             "total_subjects": len(subjects),
             "total_topics": len(topics),
+            "topics_in_plan": topics_in_plan,
+            "syllabus_progress": syllabus_progress,
+            "planned_hours": round(planned_minutes / 60.0, 1),
             "completed_sessions": completed_sessions,
             "average_mastery": avg_mastery,
             "today_sessions": sessions_data,
+            "next_session": next_session,
             "critical_topics": critical_topics,
             "subject_risk": ml_res.get("subject_risk", []),
         }
@@ -245,6 +411,7 @@ def get_subjects():
                 "name": s.name,
                 "exam_date": s.exam_date,
                 "priority": s.priority,
+                "previous_score": s.previous_score,
                 "topics": topics_data,
             })
         return res
@@ -256,7 +423,10 @@ class CreateSubjectModel(BaseModel):
     name: str
     exam_date: str
     priority: int = 1
+    previous_score: float = Field(..., ge=0, le=100)
     topics: list[str]
+    accept_suggested_sessions: bool = False
+    suggested_session_count: Optional[int] = None
 
 
 @app.post("/api/subjects")
@@ -274,6 +444,7 @@ def create_subject(body: CreateSubjectModel):
             name=body.name.strip(),
             exam_date=body.exam_date,
             priority=body.priority,
+            previous_score=body.previous_score,
         )
         db.add(subj)
         db.flush()
@@ -290,8 +461,20 @@ def create_subject(body: CreateSubjectModel):
                     theta=confidence_to_theta(50.0),
                     estimated_min=60,
                 ))
+        scheduled = 0
+        if body.accept_suggested_sessions:
+            n = body.suggested_session_count
+            if n is None:
+                sug = session_suggestion(body.previous_score, user.session_min or config.DEFAULT_SESSION_MINUTES)
+                n = sug.get("suggested_session_count") or 0
+            scheduled = schedule_count_for_subject(db, user.id, subj, int(n))
         db.commit()
-        return {"ok": True, "subject_id": subj.id, "message": "Subject created successfully."}
+        return {
+            "ok": True,
+            "subject_id": subj.id,
+            "sessions_created": scheduled,
+            "message": "Subject created successfully.",
+        }
     finally:
         db.close()
 
@@ -300,6 +483,7 @@ class UpdateSubjectModel(BaseModel):
     name: Optional[str] = None
     exam_date: Optional[str] = None
     priority: Optional[int] = None
+    previous_score: Optional[float] = Field(None, ge=0, le=100)
 
 
 @app.put("/api/subjects/{subject_id}")
@@ -316,6 +500,8 @@ def update_subject(subject_id: int, body: UpdateSubjectModel):
             subj.exam_date = body.exam_date
         if body.priority is not None:
             subj.priority = body.priority
+        if body.previous_score is not None:
+            subj.previous_score = body.previous_score
         db.commit()
         return {"ok": True, "message": "Subject updated."}
     finally:
@@ -433,9 +619,11 @@ def get_study_plan(date_str: Optional[str] = None):
             top = db.get(Topic, s.topic_id) if s.topic_id else None
             res.append({
                 "id": s.id,
+                "subject_id": s.subject_id,
                 "scheduled_start": s.scheduled_start,
                 "scheduled_end": s.scheduled_end,
                 "time": s.scheduled_start[11:16],
+                "end_time": s.scheduled_end[11:16] if s.scheduled_end else None,
                 "date": s.scheduled_start[:10],
                 "topic_name": top.name if top else "General Study",
                 "subject_name": subj.name if subj else "—",
@@ -450,6 +638,7 @@ def get_study_plan(date_str: Optional[str] = None):
             "sessions": res,
             "needs_replan": needs_replan,
             "replan_reason": reason,
+            "readiness": _readiness_payload(db, user),
         }
     finally:
         db.close()
@@ -461,6 +650,7 @@ def generate_standard_plan():
     try:
         user = _get_or_create_user(db)
         res = build_plan(db, user.id)
+        res["readiness"] = _readiness_payload(db, user)
         return res
     finally:
         db.close()
@@ -475,8 +665,17 @@ def optimize_plan_ml(body: MLOptimizeModel = None):
     db = get_db()
     try:
         user = _get_or_create_user(db)
+        before = _readiness_payload(db, user).get("overall_pass_probability")
         weak_names = body.custom_weak_topics if body else None
         res = apply_dynamic_timetable_update(db, user.id, custom_weak_topic_names=weak_names)
+        after = _readiness_payload(db, user).get("overall_pass_probability")
+        res["readiness_before"] = before
+        res["readiness_after"] = after
+        res["readiness_delta"] = (
+            round(after - before, 1)
+            if before is not None and after is not None
+            else None
+        )
         return res
     finally:
         db.close()
@@ -509,7 +708,54 @@ def update_session(session_id: int, body: SessionActionModel):
             except Exception:
                 pass
         db.commit()
-        return {"ok": True, "message": "Session updated."}
+        return {"ok": True, "message": "Session updated.", "readiness": _readiness_payload(db, user)}
+    finally:
+        db.close()
+
+
+@app.get("/api/sessions/{session_id}/skip-preview")
+def preview_session_skip(session_id: int):
+    db = get_db()
+    try:
+        user = _get_or_create_user(db)
+        sess = db.query(Session).filter(Session.id == session_id, Session.user_id == user.id).first()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        subj = db.get(Subject, sess.subject_id)
+        if not subj:
+            raise HTTPException(status_code=404, detail="Subject not found.")
+        subject_sessions = (
+            db.query(Session)
+            .filter(Session.user_id == user.id, Session.subject_id == subj.id)
+            .all()
+        )
+        impact = skip_impact(subj, subject_sessions, sess, user.session_min or config.DEFAULT_SESSION_MINUTES)
+        return {
+            "model_available": impact["model_available"],
+            "subject_name": impact["subject_name"],
+            "before": to_percent(impact["before"]),
+            "after": to_percent(impact["after"]),
+            "drop_percentage_points": impact["drop_percentage_points"],
+            "warn": impact["warn"],
+            "scheduled_hours_before": impact["scheduled_hours_before"],
+            "scheduled_hours_after": impact["scheduled_hours_after"],
+            "warning": None if impact["model_available"] else "Pass estimates unavailable — the trained model did not load.",
+        }
+    finally:
+        db.close()
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: int):
+    db = get_db()
+    try:
+        user = _get_or_create_user(db)
+        sess = db.query(Session).filter(Session.id == session_id, Session.user_id == user.id).first()
+        if not sess:
+            raise HTTPException(status_code=404, detail="Session not found.")
+        db.delete(sess)
+        db.commit()
+        return {"ok": True, "message": "Session deleted.", "readiness": _readiness_payload(db, user)}
     finally:
         db.close()
 
@@ -520,6 +766,32 @@ def get_ml_diagnostic():
     try:
         user = _get_or_create_user(db)
         res = analyze_user_weaknesses(db, user.id)
+        if res.get("ok"):
+            res["weak_topics"] = [
+                {
+                    "subject": t.get("subject_name"),
+                    "topic": t.get("name"),
+                    "weakness_score": t.get("weakness_score"),
+                    "confidence": t.get("confidence"),
+                    "recommendation": t.get("recommendation"),
+                }
+                for t in res.get("critical_topics", [])
+            ]
+            scheduled = (
+                db.query(Session)
+                .filter(
+                    Session.user_id == user.id,
+                    Session.status == "scheduled",
+                )
+                .all()
+            )
+            priority_slots = sum(
+                1
+                for s in scheduled
+                if s.notes and ("ML Priority Focus" in s.notes or "Weak Topic" in s.notes)
+            )
+            res["priority_slots"] = priority_slots
+            res["scheduled_sessions"] = len(scheduled)
         return res
     finally:
         db.close()
@@ -571,7 +843,9 @@ def generate_ai_quiz(body: QuizGenerateModel):
             "ok": True,
             "quiz_id": quiz.id,
             "topic_id": top.id if top else None,
-            "questions": res["questions"]
+            "questions": res["questions"],
+            "provider": res.get("provider"),
+            "provider_error": res.get("provider_error"),
         }
     finally:
         db.close()
@@ -886,6 +1160,8 @@ def generate_document_flashcards(body: DocFlashcardsModel):
             "set_id": fset.id,
             "cards": res["cards"],
             "title": body.title,
+            "provider": res.get("provider"),
+            "provider_error": res.get("provider_error"),
         }
     finally:
         db.close()
@@ -928,7 +1204,9 @@ def generate_document_quiz(body: DocQuizModel):
             "ok": True,
             "quiz_id": quiz.id,
             "title": body.title,
-            "questions": res["questions"]
+            "questions": res["questions"],
+            "provider": res.get("provider"),
+            "provider_error": res.get("provider_error"),
         }
     finally:
         db.close()
@@ -968,6 +1246,8 @@ def register_document_as_subject(body: RegisterDocSubjectModel):
             "message": msg,
             "topics": ext["topics"],
             "plan_sessions_created": plan_res.get("created", 0),
+            "provider": ext.get("provider"),
+            "provider_error": ext.get("provider_error"),
         }
     finally:
         db.close()
@@ -1028,6 +1308,35 @@ class PredictInputModel(BaseModel):
     prev_exam_score: float
 
 
+@app.get("/api/predictor/suggest")
+def get_session_suggestion(previous_score: float = Query(..., ge=0, le=100)):
+    db = get_db()
+    try:
+        user = _get_or_create_user(db)
+        sug = session_suggestion(previous_score, user.session_min or config.DEFAULT_SESSION_MINUTES)
+        return {
+            "model_available": sug["model_available"],
+            "benchmark_hours": sug["benchmark_hours"],
+            "session_hours": sug["session_hours"],
+            "suggested_session_count": sug["suggested_session_count"],
+            "projected_hours": sug["projected_hours"],
+            "pass_probability": to_percent(sug["pass_probability"]),
+            "warning": None if sug["model_available"] else "Pass estimates unavailable — the trained model did not load.",
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/predictor/readiness")
+def get_readiness():
+    db = get_db()
+    try:
+        user = _get_or_create_user(db)
+        return _readiness_payload(db, user)
+    finally:
+        db.close()
+
+
 @app.post("/api/model/predict")
 def run_model_prediction(body: PredictInputModel):
     model = load_model()
@@ -1047,6 +1356,24 @@ def run_model_prediction(body: PredictInputModel):
 def get_model_metadata():
     meta = config.load_model_metadata()
     return meta
+
+
+class VisualiserStateModel(BaseModel):
+    study_hours: float = Field(..., ge=config.STUDY_HOURS_MIN, le=config.STUDY_HOURS_MAX)
+    previous_score: float = Field(..., ge=config.EXAM_SCORE_MIN, le=config.EXAM_SCORE_MAX)
+
+
+@app.get("/api/model-visualiser/overview")
+def get_visualiser_overview():
+    return visualiser_overview()
+
+
+@app.post("/api/model-visualiser/state")
+def get_visualiser_state(body: VisualiserStateModel):
+    res = visualiser_state(body.study_hours, body.previous_score)
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Prediction failed."))
+    return res
 
 
 # ─────────────────────────────────────────────────────────────────────────────

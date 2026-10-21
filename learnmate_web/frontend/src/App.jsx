@@ -8,6 +8,7 @@ import QuizzesView from './components/QuizzesView';
 import FlashcardsView from './components/FlashcardsView';
 import DoubtSolverView from './components/DoubtSolverView';
 import ModelLabView from './components/ModelLabView';
+import ModelVisualiserView from './components/ModelVisualiserView';
 import { Menu, X, User as UserIcon, ArrowLeft } from 'lucide-react';
 import * as api from './api';
 
@@ -27,6 +28,9 @@ export default function App() {
   // Refs for scroll-based sidebar collapse
   const mainContentRef = useRef(null);
   const lastScrollY = useRef(0);
+  // When the user manually expands the rail mid-page, don't fight them
+  // until they scroll back to the top or navigate to another module.
+  const expandLockRef = useRef(false);
 
   useEffect(() => {
     loadStatus();
@@ -62,10 +66,54 @@ export default function App() {
     return () => window.removeEventListener('hashchange', handleHash);
   }, []);
 
-  // Manual sidebar collapse only (auto-collapse on scroll caused severe layout thrashing and scroll lag)
+  // Collapse the sidebar as the user scrolls into the page and restore it
+  // near the top. A requestAnimationFrame guard plus hysteresis thresholds
+  // keeps this to one state change per boundary instead of per scroll pixel.
+  useEffect(() => {
+    if (currentView !== 'app') return undefined;
+    const el = mainContentRef.current;
+    if (!el) return undefined;
+
+    const COLLAPSE_AT = 72;
+    const EXPAND_AT = 16;
+    let rafId = 0;
+    lastScrollY.current = el.scrollTop;
+
+    const onScroll = () => {
+      if (rafId) return;
+      rafId = window.requestAnimationFrame(() => {
+        rafId = 0;
+        const y = el.scrollTop;
+        const scrollingDown = y > lastScrollY.current;
+        lastScrollY.current = y;
+
+        if (y <= EXPAND_AT) {
+          expandLockRef.current = false;
+          setSidebarCollapsed(false);
+        } else if (scrollingDown && y >= COLLAPSE_AT && !expandLockRef.current) {
+          setSidebarCollapsed(true);
+        }
+      });
+    };
+
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (rafId) window.cancelAnimationFrame(rafId);
+    };
+  }, [currentView]);
+
+  const handleSidebarCollapse = (next) => {
+    // A manual expand wins until the user returns to the top.
+    expandLockRef.current = next === false;
+    setSidebarCollapsed(next);
+  };
+
   const handleNavigate = (tab) => {
     setActiveTab(tab);
     setMobileMenuOpen(false);
+    expandLockRef.current = false;
+    setSidebarCollapsed(false);
     if (mainContentRef.current) {
       mainContentRef.current.scrollTo({ top: 0, behavior: 'smooth' });
     }
@@ -122,7 +170,7 @@ export default function App() {
             setActiveTab={handleNavigate}
             systemStatus={systemStatus}
             collapsed={sidebarCollapsed}
-            setCollapsed={setSidebarCollapsed}
+            setCollapsed={handleSidebarCollapse}
           />
         </div>
 
@@ -158,6 +206,7 @@ export default function App() {
         {/* ── Scrollable Main Column ── */}
         <div
           ref={mainContentRef}
+          className="main-scroll"
           style={{
             flex: 1,
             display: 'flex',
@@ -170,7 +219,7 @@ export default function App() {
           }}
         >
           {/* Top Header */}
-          <header style={{
+          <header className="workspace-header" style={{
             height: '64px',
             borderBottom: '1.5px solid var(--border-strong)',
             backgroundColor: 'var(--bg-surface-low)',
@@ -194,11 +243,11 @@ export default function App() {
               </button>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                <span className="tag-mono" style={{ color: 'var(--text-main)', fontWeight: 700 }}>
+                <span className="tag-mono workspace-breadcrumb-crumb" style={{ color: 'var(--text-main)', fontWeight: 700 }}>
                   // WORKSPACE
                 </span>
-                <span style={{ color: 'var(--border-strong)', opacity: 0.4 }}>/</span>
-                <span style={{
+                <span className="workspace-breadcrumb-slash" style={{ color: 'var(--border-strong)', opacity: 0.4 }}>/</span>
+                <span className="workspace-title" style={{
                   fontFamily: 'var(--font-heading)',
                   fontSize: '1.05rem',
                   fontWeight: 800,
@@ -213,12 +262,13 @@ export default function App() {
                   {activeTab === 'flashcards' && 'Knowledge Base & Flashcards'}
                   {activeTab === 'doubt-solver' && 'AI Academic Doubt Solver (Groq LPU)'}
                   {activeTab === 'model-lab' && 'ML Model Lab & Predictor'}
+                  {activeTab === 'model-visualiser' && 'Model Visualiser'}
                 </span>
               </div>
             </div>
 
             {/* User Pill */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div className="workspace-user" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
               <div className="corner-frame" style={{
                 display: 'flex', alignItems: 'center', gap: '0.5rem',
                 padding: '0.35rem 0.75rem',
@@ -249,7 +299,13 @@ export default function App() {
           </header>
 
           {/* Page Content */}
-          <main style={{ padding: '2rem', maxWidth: '1400px', width: '100%', margin: '0 auto' }}>
+          <main className="workspace-main" style={{
+            padding: '2rem',
+            maxWidth: '1400px',
+            width: '100%',
+            margin: '0 auto',
+            boxSizing: 'border-box',
+          }}>
             {activeTab === 'dashboard' && <DashboardView onNavigate={handleNavigate} />}
             {activeTab === 'study-plan' && <StudyPlanView />}
             {activeTab === 'subjects' && <SubjectsView />}
@@ -262,6 +318,7 @@ export default function App() {
               />
             )}
             {activeTab === 'model-lab' && <ModelLabView />}
+            {activeTab === 'model-visualiser' && <ModelVisualiserView />}
           </main>
         </div>
       </div>

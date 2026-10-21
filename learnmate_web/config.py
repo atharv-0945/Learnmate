@@ -35,6 +35,16 @@ load_dotenv(WEBAPP_DIR / ".env", override=True)
 # ---------------------------------------------------------------------------
 GEMINI_API_KEY: str = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# If the preferred Gemini model is overloaded or retired, try these in order.
+# The app also caches the last model that worked, so this list is only a fallback.
+GEMINI_FALLBACK_MODELS: list[str] = [
+    name.strip()
+    for name in os.environ.get(
+        "GEMINI_FALLBACK_MODELS",
+        "gemini-3.5-flash,gemini-3.6-flash,gemini-flash-lite-latest",
+    ).split(",")
+    if name.strip()
+]
 GEMINI_ENABLED: bool = bool(GEMINI_API_KEY)
 
 # ---------------------------------------------------------------------------
@@ -47,11 +57,19 @@ GROQ_ENABLED: bool = bool(GROQ_API_KEY)
 
 def reload_env():
     """Reload environment variables from .env to pick up updated API keys."""
-    global GEMINI_API_KEY, GEMINI_MODEL, GEMINI_ENABLED
+    global GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODELS, GEMINI_ENABLED
     global GROQ_API_KEY, GROQ_MODEL, GROQ_ENABLED
     load_dotenv(WEBAPP_DIR / ".env", override=True)
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+    GEMINI_FALLBACK_MODELS = [
+        name.strip()
+        for name in os.environ.get(
+            "GEMINI_FALLBACK_MODELS",
+            "gemini-3.5-flash,gemini-3.6-flash,gemini-flash-lite-latest",
+        ).split(",")
+        if name.strip()
+    ]
     GEMINI_ENABLED = bool(GEMINI_API_KEY)
     GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
     GROQ_MODEL = os.environ.get("GROQ_MODEL", "qwen/qwen3.8-27b")
@@ -121,6 +139,24 @@ STUDY_HOURS_MAX = 24.0
 EXAM_SCORE_MIN = 0.0
 EXAM_SCORE_MAX = 100.0
 
+# Model Visualiser (Gradient Descent logistic regression)
+VISUALISER_CHART_HOURS_MIN = 0.0
+VISUALISER_CHART_HOURS_MAX = 20.0
+VISUALISER_GRID_RESOLUTION = 121
+VISUALISER_CURVE_POINTS = 121
+VISUALISER_DECISION_THRESHOLD = 0.50
+VISUALISER_HIGH_CONFIDENCE_THRESHOLD = 0.80
+
+# Dataset-driven timetable / pass-probability (change here, not in services)
+BENCHMARK_SCORE_WINDOW = 10.0          # ± points around previous score
+BENCHMARK_SCORE_WINDOW_WIDE = 20.0     # fallback window if the tight band is empty
+PASS_TARGET_PERCENTAGE = 60.0          # dataset pass threshold on previous exam score
+SKIP_WARNING_MIN_DROP = 2.0            # percentage-point drop that flags a skip warning
+DATASET_PASS_VALUE = 1                 # Pass/Fail label for a pass in the raw CSV
+# Priority 1 = high … 3 = low. Used as weights for overall readiness.
+SUBJECT_PRIORITY_WEIGHTS = {1: 3.0, 2: 2.0, 3: 1.0}
+COUNTABLE_SESSION_STATUSES = ("scheduled", "completed")
+
 # ---------------------------------------------------------------------------
 # Cached metadata helper
 # ---------------------------------------------------------------------------
@@ -142,3 +178,9 @@ def feature_names() -> list[str]:
     """Return feature names in the order the model expects."""
     meta = load_model_metadata()
     return meta.get("features", ["Study Hours", "Previous Exam Score"])
+
+
+def target_name() -> str:
+    """Return the dataset target column the model was trained on."""
+    meta = load_model_metadata()
+    return meta.get("target", "Pass/Fail")

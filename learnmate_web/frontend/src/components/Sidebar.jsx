@@ -6,6 +6,7 @@ import {
   BrainCircuit,
   Layers,
   FlaskConical,
+  Eye,
   Terminal,
   Cpu,
   Check,
@@ -34,6 +35,7 @@ export default function Sidebar({ activeTab, setActiveTab, systemStatus, collaps
     { id: 'flashcards', code: '// 05', label: 'Flashcards & Documents', icon: Layers },
     { id: 'doubt-solver', code: '// 06', label: 'AI Doubt Solver', icon: Zap },
     { id: 'model-lab', code: '// 07', label: 'ML Model Lab', icon: FlaskConical },
+    { id: 'model-visualiser', code: '// 08', label: 'Model Visualiser', icon: Eye },
   ];
 
   return (
@@ -63,7 +65,13 @@ export default function Sidebar({ activeTab, setActiveTab, systemStatus, collaps
           marginBottom: '1.5rem',
           borderBottom: '1px solid var(--border-subtle)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: isCollapsed ? 0 : '0.65rem',
+            minWidth: 0,
+            transition: 'gap 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+          }}>
             <div style={{
               width: '38px',
               height: '38px',
@@ -80,38 +88,44 @@ export default function Sidebar({ activeTab, setActiveTab, systemStatus, collaps
               <Terminal size={20} strokeWidth={2.4} />
             </div>
 
-            {!isCollapsed && (
-              <div style={{ overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
-                  <span style={{
-                    fontFamily: 'var(--font-heading)',
-                    fontSize: '1.35rem',
-                    fontWeight: 900,
-                    color: 'var(--text-main)',
-                    letterSpacing: '-0.02em',
-                  }}>
-                    LearnMate
-                  </span>
-                  <span style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.65rem',
-                    color: 'var(--text-secondary)',
-                    fontWeight: 700,
-                  }}>
-                    [SYS_01]
-                  </span>
-                </div>
-                <div style={{
+            <div style={{
+              overflow: 'hidden',
+              whiteSpace: 'nowrap',
+              minWidth: 0,
+              maxWidth: isCollapsed ? 0 : 200,
+              opacity: isCollapsed ? 0 : 1,
+              transform: isCollapsed ? 'translateX(-6px)' : 'translateX(0)',
+              transition: 'max-width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
+                <span style={{
+                  fontFamily: 'var(--font-heading)',
+                  fontSize: '1.35rem',
+                  fontWeight: 900,
+                  color: 'var(--text-main)',
+                  letterSpacing: '-0.02em',
+                }}>
+                  LearnMate
+                </span>
+                <span style={{
                   fontFamily: 'var(--font-mono)',
                   fontSize: '0.65rem',
                   color: 'var(--text-secondary)',
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
+                  fontWeight: 700,
                 }}>
-                  COGNITIVE COMPANION
-                </div>
+                  [SYS_01]
+                </span>
               </div>
-            )}
+              <div style={{
+                fontFamily: 'var(--font-mono)',
+                fontSize: '0.65rem',
+                color: 'var(--text-secondary)',
+                letterSpacing: '0.06em',
+                textTransform: 'uppercase',
+              }}>
+                COGNITIVE COMPANION
+              </div>
+            </div>
           </div>
 
           {/* Collapse/Expand Toggle Button */}
@@ -139,11 +153,20 @@ export default function Sidebar({ activeTab, setActiveTab, systemStatus, collaps
         </div>
 
         {/* Section Navigation Header */}
-        {!isCollapsed && (
-          <div className="tag-mono" style={{ marginBottom: '0.75rem', paddingLeft: '0.25rem' }}>
-            NAVIGATION MODULES
-          </div>
-        )}
+        <div
+          className="tag-mono"
+          style={{
+            marginBottom: isCollapsed ? 0 : '0.75rem',
+            paddingLeft: '0.25rem',
+            maxHeight: isCollapsed ? 0 : '1.1rem',
+            opacity: isCollapsed ? 0 : 1,
+            overflow: 'hidden',
+            whiteSpace: 'nowrap',
+            transition: 'max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), margin 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease',
+          }}
+        >
+          NAVIGATION MODULES
+        </div>
 
         {/* Nav Items List */}
         <nav style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
@@ -175,20 +198,40 @@ export default function Sidebar({ activeTab, setActiveTab, systemStatus, collaps
                   overflow: 'hidden',
                 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexShrink: 0 }}>
+                <div style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: isCollapsed ? 0 : '0.65rem',
+                  flexShrink: 0,
+                  minWidth: 0,
+                  transition: 'gap 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
+                }}>
                   <Icon size={18} strokeWidth={isActive ? 2.4 : 1.8} />
-                  {!isCollapsed && <span style={{ whiteSpace: 'nowrap' }}>{item.label}</span>}
-                </div>
-                {!isCollapsed && (
                   <span style={{
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: '0.65rem',
-                    opacity: isActive ? 0.9 : 0.5,
-                    fontWeight: 700,
+                    whiteSpace: 'nowrap',
+                    display: 'inline-block',
+                    overflow: 'hidden',
+                    maxWidth: isCollapsed ? 0 : 180,
+                    opacity: isCollapsed ? 0 : 1,
+                    transform: isCollapsed ? 'translateX(-4px)' : 'translateX(0)',
+                    transition: 'max-width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)',
                   }}>
-                    {item.code}
+                    {item.label}
                   </span>
-                )}
+                </div>
+                <span style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: '0.65rem',
+                  opacity: isCollapsed ? 0 : (isActive ? 0.9 : 0.5),
+                  fontWeight: 700,
+                  display: 'inline-block',
+                  overflow: 'hidden',
+                  whiteSpace: 'nowrap',
+                  maxWidth: isCollapsed ? 0 : 40,
+                  transition: 'max-width 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease',
+                }}>
+                  {item.code}
+                </span>
               </button>
             );
           })}

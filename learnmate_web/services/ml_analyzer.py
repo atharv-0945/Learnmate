@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config import DIFFICULTY_BIAS, PLANNER_WEIGHTS, REVISION_RESERVE_FRACTION
 from services.mastery import theta_to_confidence, confidence_to_theta
+from services.predictor import benchmark_hours
 
 
 def _sigmoid(z: float) -> float:
@@ -335,6 +336,12 @@ def apply_dynamic_timetable_update(db_session, user_id: int, custom_weak_topic_n
     # Re-score all topics, giving a strong 2.5x multiplier to ML weak topics
     scored_topics = []
     for subj in subjects:
+        try:
+            exam_dt = date.fromisoformat(subj.exam_date)
+        except (TypeError, ValueError):
+            continue
+        if exam_dt < today:
+            continue  # exam already passed
         for topic in subj.topics:
             if topic.status == "done":
                 continue
@@ -349,7 +356,8 @@ def apply_dynamic_timetable_update(db_session, user_id: int, custom_weak_topic_n
             scored_topics.append((priority, is_critical, topic))
 
     if not scored_topics:
-        return {"created": 0, "warning": "No pending topics to schedule."}
+        return {"created": 0, "weak_sessions_scheduled": 0,
+                "warning": "No pending topics with upcoming exams to schedule."}
 
     # Sort topics: Critical weak topics first, then by priority descending
     scored_topics.sort(key=lambda x: (x[1], x[0]), reverse=True)
@@ -358,19 +366,24 @@ def apply_dynamic_timetable_update(db_session, user_id: int, custom_weak_topic_n
     revision_days = max(1, int(max_days * REVISION_RESERVE_FRACTION))
     plan_end = last_exam - timedelta(days=revision_days)
 
+    now_utc = datetime.now(timezone.utc)
     slots = _generate_slots(
         today, plan_end, study_days,
         user.hours_per_day, user.session_min, user.break_min,
+        not_before=now_utc,
     )
+    if not slots:
+        return {"created": 0, "weak_sessions_scheduled": 0,
+                "warning": "No study slots left before the revision period. "
+                           "Add study days/hours or review your exam dates."}
 
-    # Clear only future scheduled sessions (preserve completed/in-progress)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    # Rebuild the pending timetable. Delete every scheduled session so
+    # repeated optimisation is idempotent (completed/skipped are preserved).
     old_scheduled = (
         db_session.query(Session)
         .filter(
             Session.user_id == user_id,
             Session.status == "scheduled",
-            Session.scheduled_start >= now_iso,
         )
         .all()
     )
@@ -378,24 +391,48 @@ def apply_dynamic_timetable_update(db_session, user_id: int, custom_weak_topic_n
         db_session.delete(s)
     db_session.flush()
 
-    # Allocate slots: weak topics get allocated to the earliest available study slots
-    topic_iter = (item for item in scored_topics)
-    current_item = next(topic_iter, None)
-    minutes_remaining = current_item[2].estimated_min if current_item else 0
+    # ── Allocate slots ────────────────────────────────────────────────
+    # Phase 1: give every pending topic one slot (coverage, weak topics first).
+    # Phase 2: use the remaining slots to bring under-funded subjects up to the
+    # dataset benchmark for their previous score, cycling their weakest topics.
+    # This prevents a subject with only two topics from being starved of time
+    # just because another subject has twenty-eight topics.
+    subject_map = {subj.id: subj for subj in subjects if subj.topics}
+    scored_by_id = {topic.id: (priority, is_crit) for priority, is_crit, topic in scored_topics}
+    queues: dict[int, list] = {}
+    for _priority, _is_crit, topic in scored_topics:
+        queues.setdefault(topic.subject_id, []).append(topic)
+
+    fallback_score = user.prev_exam_score
+    target_hours: dict[int, float] = {}
+    for subject_id, queue in queues.items():
+        subj = subject_map[subject_id]
+        score = subj.previous_score if subj.previous_score is not None else fallback_score
+        target = benchmark_hours(score) if score is not None else None
+        target_hours[subject_id] = max(4.0, min(float(target or 6.0), 12.0))
+
+    completed_hours: dict[int, float] = {}
+    for sess in (
+        db_session.query(Session)
+        .filter(Session.user_id == user_id, Session.status == "completed")
+        .all()
+    ):
+        completed_hours[sess.subject_id] = completed_hours.get(sess.subject_id, 0.0) + (
+            (sess.duration_min or 0) / 60.0
+        )
+    allocated_hours = dict(completed_hours)
 
     created_sessions = []
     weak_count = 0
+    cursors: dict[int, int] = {}
+    last_subject = None
 
-    for (slot_start, slot_end) in slots:
-        if current_item is None:
-            break
-        priority, is_crit, topic = current_item
+    def add_session(slot_start, slot_end, topic, is_crit):
+        nonlocal weak_count, last_subject
         dur = int((slot_end - slot_start).total_seconds() / 60)
-
         note_label = "🔥 ML Priority Focus (Weak Topic)" if is_crit else "Standard Session"
         if is_crit:
             weak_count += 1
-
         sess = Session(
             user_id=user_id,
             subject_id=topic.subject_id,
@@ -408,20 +445,73 @@ def apply_dynamic_timetable_update(db_session, user_id: int, custom_weak_topic_n
         )
         db_session.add(sess)
         created_sessions.append(sess)
+        allocated_hours[topic.subject_id] = allocated_hours.get(topic.subject_id, 0.0) + (dur / 60.0)
+        last_subject = topic.subject_id
 
-        minutes_remaining -= dur
-        if minutes_remaining <= 0:
-            current_item = next(topic_iter, None)
-            minutes_remaining = current_item[2].estimated_min if current_item else 0
+    slot_idx = 0
+    covered_topics = 0
+    for _priority, is_crit, topic in scored_topics:
+        if slot_idx >= len(slots):
+            break
+        slot_start, slot_end = slots[slot_idx]
+        slot_idx += 1
+        covered_topics += 1
+        add_session(slot_start, slot_end, topic, is_crit)
+    uncovered_topics = len(scored_topics) - covered_topics
+
+    while slot_idx < len(slots):
+        candidates = [
+            subject_id for subject_id in queues
+            if allocated_hours.get(subject_id, 0.0) + 0.01 < target_hours.get(subject_id, 0.0)
+        ]
+        if not candidates:
+            break
+        # Rotate away from the previous subject when possible so repeated
+        # topics are spread across days instead of being stacked back-to-back.
+        pool = [subject_id for subject_id in candidates if subject_id != last_subject] or candidates
+        subject_id = max(
+            pool,
+            key=lambda sid: (
+                (target_hours[sid] - allocated_hours.get(sid, 0.0))
+                * (4 - (subject_map[sid].priority or 2))
+            ),
+        )
+        queue = queues[subject_id]
+        cursor = cursors.get(subject_id, 0)
+        topic = queue[cursor % len(queue)]
+        cursors[subject_id] = cursor + 1
+        _, is_crit = scored_by_id.get(topic.id, (0, False))
+        slot_start, slot_end = slots[slot_idx]
+        slot_idx += 1
+        add_session(slot_start, slot_end, topic, is_crit)
+
+    underfunded = [
+        subject_id for subject_id in queues
+        if allocated_hours.get(subject_id, 0.0) + 0.01 < target_hours.get(subject_id, 0.0)
+    ]
+    if uncovered_topics:
+        warning = "Not enough study time to cover every topic before the revision period."
+    elif underfunded:
+        warning = (
+            "Timetable built, but some subjects are still below their recommended "
+            "study hours. Add study days/hours for a stronger plan."
+        )
+    else:
+        warning = None
 
     db_session.commit()
+
+    scheduled_hours = round(
+        sum((s.duration_min or 0) for s in created_sessions) / 60.0, 1
+    )
 
     return {
         "ok": True,
         "created": len(created_sessions),
         "weak_sessions_scheduled": weak_count,
         "critical_topics_count": len(weak_topic_ids),
-        "warning": None,
+        "scheduled_hours": scheduled_hours,
+        "warning": warning,
     }
 
 

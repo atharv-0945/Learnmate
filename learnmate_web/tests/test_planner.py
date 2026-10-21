@@ -1,7 +1,7 @@
 """
 tests/test_planner.py – Tests for heuristic timetable slot generation and priority calculation.
 """
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from services.planner import _compute_priority, _generate_slots
@@ -41,3 +41,22 @@ def test_generate_slots_structure():
     for s_start, s_end in slots:
         diff_mins = (s_end - s_start).total_seconds() / 60
         assert diff_mins == 45
+
+
+def test_generate_slots_skip_past_slots():
+    start = date(2026, 10, 20)  # Tuesday
+    end = date(2026, 10, 22)    # Thursday
+    not_before = datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc)
+    slots = _generate_slots(
+        start_date=start,
+        end_date=end,
+        study_days=["Tue", "Wed", "Thu"],
+        hours_per_day=1.5,
+        session_min=45,
+        break_min=10,
+        start_hour=9,
+        not_before=not_before,
+    )
+    # Tuesday's 09:00 slot is in the past; Wednesday and Thursday still count.
+    assert len(slots) == 2
+    assert all(s_start >= not_before for s_start, _ in slots)

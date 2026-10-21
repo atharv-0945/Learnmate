@@ -1,72 +1,157 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  TrendingUp,
-  Brain,
   CheckCircle2,
   Calendar,
-  Clock,
-  Sparkles,
-  AlertTriangle,
   ArrowRight,
   Flame,
   Check,
   FastForward,
-  RotateCcw,
-  Activity,
-  Sliders,
-  Terminal,
-  Layers,
-  BookOpen
+  Sliders
 } from 'lucide-react';
 import * as api from '../api';
+import { ReadinessBlock, SkipImpactModal } from './PassChance';
+
+const DEFAULT_SIM_HOURS = 8.0;
+const DEFAULT_SIM_SCORE = 68.0;
+
+const clampNumber = (value, min, max) => Math.min(max, Math.max(min, value));
 
 export default function DashboardView({ onNavigate }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
   // Live ML Predictor Sandbox state
-  const [simHours, setSimHours] = useState(8.0);
-  const [simScore, setSimScore] = useState(68.0);
+  const [simHours, setSimHours] = useState(DEFAULT_SIM_HOURS);
+  const [simScore, setSimScore] = useState(DEFAULT_SIM_SCORE);
   const [simProb, setSimProb] = useState(null);
+  const [simIsPass, setSimIsPass] = useState(null);
   const [predicting, setPredicting] = useState(false);
+  const [simError, setSimError] = useState('');
   const [optimizing, setOptimizing] = useState(false);
   const [optMessage, setOptMessage] = useState(null);
+  const [skipModal, setSkipModal] = useState(null);
+  const [busySessionId, setBusySessionId] = useState(null);
+
+  const simInitialised = useRef(false);
+  const predictSeq = useRef(0);
+  const predictTimer = useRef(null);
+
+  const requestPrediction = useCallback((hours, score, { immediate = false } = {}) => {
+    if (predictTimer.current) {
+      clearTimeout(predictTimer.current);
+      predictTimer.current = null;
+    }
+
+    const run = async () => {
+      const seq = predictSeq.current + 1;
+      predictSeq.current = seq;
+      setPredicting(true);
+      setSimError('');
+      try {
+        const res = await api.predictModel(hours, score);
+        if (seq !== predictSeq.current) return;
+        const prob = typeof res.pass_probability === 'number' ? res.pass_probability : null;
+        setSimProb(prob);
+        setSimIsPass(typeof res.is_pass === 'boolean' ? res.is_pass : null);
+      } catch (err) {
+        if (seq !== predictSeq.current) return;
+        setSimProb(null);
+        setSimIsPass(null);
+        setSimError(err.message || 'Prediction unavailable');
+      } finally {
+        if (seq === predictSeq.current) setPredicting(false);
+      }
+    };
+
+    if (immediate) {
+      run();
+    } else {
+      // Small debounce: smooth while dragging, but still feels instant.
+      predictTimer.current = setTimeout(run, 140);
+    }
+  }, []);
+
+  useEffect(() => () => {
+    if (predictTimer.current) clearTimeout(predictTimer.current);
+    predictSeq.current += 1;
+  }, []);
+
+  const loadDashboard = useCallback(async ({ silent = false } = {}) => {
+    try {
+      if (silent) setRefreshing(true); else setLoading(true);
+      const res = await api.getDashboard();
+      setData(res);
+
+      // Seed the simulator from the student's saved profile once, then let the
+      // sliders own the values from then on (dashboard refreshes never reset them).
+      if (!simInitialised.current && res.user) {
+        simInitialised.current = true;
+        const hours = clampNumber(Number(res.user.weekly_study_hours ?? DEFAULT_SIM_HOURS), 0, 24);
+        const score = clampNumber(Number(res.user.prev_exam_score ?? DEFAULT_SIM_SCORE), 0, 100);
+        setSimHours(hours);
+        setSimScore(score);
+        requestPrediction(hours, score, { immediate: true });
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+    }
+  }, [requestPrediction]);
 
   useEffect(() => {
     loadDashboard();
-  }, []);
+  }, [loadDashboard]);
 
-  const loadDashboard = async () => {
-    try {
-      setLoading(true);
-      const res = await api.getDashboard();
-      setData(res);
-      setSimProb(res.pass_probability);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+  const handleSimHours = (event) => {
+    const next = parseFloat(event.target.value);
+    if (Number.isNaN(next)) return;
+    setSimHours(next);
+    requestPrediction(next, simScore);
   };
 
-  const handlePredict = async (hours, score) => {
-    setSimHours(hours);
-    setSimScore(score);
-    try {
-      setPredicting(true);
-      const res = await api.predictModel(hours, score);
-      setSimProb(res.pass_probability);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setPredicting(false);
-    }
+  const handleSimScore = (event) => {
+    const next = parseFloat(event.target.value);
+    if (Number.isNaN(next)) return;
+    setSimScore(next);
+    requestPrediction(simHours, next);
   };
 
   const handleSessionAction = async (id, status, shiftDays = 0) => {
+    setBusySessionId(id);
     try {
       await api.updateSession(id, { status, shift_days: shiftDays });
-      loadDashboard();
+      await loadDashboard({ silent: true });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBusySessionId(null);
+    }
+  };
+
+  const openSkipModal = async (id, action) => {
+    setSkipModal({ id, action, preview: null, loading: true });
+    try {
+      const preview = await api.previewSessionSkip(id);
+      setSkipModal({ id, action, preview, loading: false });
+    } catch {
+      setSkipModal({ id, action, preview: null, loading: false });
+    }
+  };
+
+  const confirmSkipOrDelete = async () => {
+    if (!skipModal) return;
+    const { id, action } = skipModal;
+    setSkipModal(null);
+    try {
+      if (action === 'delete') {
+        await api.deleteSession(id);
+      } else {
+        await api.updateSession(id, { status: 'skipped' });
+      }
+      await loadDashboard({ silent: true });
     } catch (err) {
       console.error(err);
     }
@@ -75,9 +160,26 @@ export default function DashboardView({ onNavigate }) {
   const handleMLOptimize = async () => {
     try {
       setOptimizing(true);
+      setOptMessage(null);
       const res = await api.optimizePlanML([]);
-      setOptMessage(`SUCCESS: Calibrated ${res.created} study slots (${res.weak_sessions_scheduled} priority slots for detected weak areas).`);
-      loadDashboard();
+      const before = res.readiness_before;
+      const after = res.readiness_after;
+
+      if (!res.created) {
+        setOptMessage(res.warning || 'No sessions were scheduled — your timetable is already up to date.');
+      } else {
+        const delta = before != null && after != null ? after - before : null;
+        const readinessLine = delta == null
+          ? ''
+          : Math.abs(delta) >= 0.5
+            ? ` Readiness ${Math.round(before)}% → ${Math.round(after)}% (${delta >= 0 ? '+' : ''}${Math.round(delta)} pts).`
+            : ` Readiness steady at ${Math.round(after)}%.`;
+        setOptMessage(
+          `SUCCESS: Scheduled ${res.created} study slots (${res.weak_sessions_scheduled} priority for weak areas).${readinessLine}`
+          + (res.warning ? ` ${res.warning}` : '')
+        );
+      }
+      await loadDashboard({ silent: true });
     } catch (err) {
       setOptMessage(`Optimization error: ${err.message}`);
     } finally {
@@ -109,16 +211,39 @@ export default function DashboardView({ onNavigate }) {
     );
   }
 
-  const passProb = Math.min(100, Math.max(0, Math.round(data?.pass_probability ?? 84.5)));
-  const rawMastery = data?.average_mastery ?? data?.avg_mastery ?? 76;
-  const avgMastery = Math.min(100, Math.max(0, Math.round(rawMastery > 1 ? rawMastery : rawMastery * 100)));
+  const overallPct = data?.readiness?.overall_pass_probability ?? data?.pass_probability ?? null;
+  const passProb = overallPct == null ? null : clampNumber(Math.round(overallPct), 0, 100);
+  const rawMastery = data?.average_mastery ?? null;
+  const avgMastery = rawMastery == null ? null : clampNumber(Math.round(rawMastery), 0, 100);
   const todaySessions = data?.today_sessions ?? [];
+  const nextSession = data?.next_session ?? null;
   const weakTopics = data?.critical_topics ?? data?.weak_topics ?? [];
-  const totalSubj = data?.total_subjects ?? data?.subjects_count ?? 2;
-  const totalTop = data?.total_topics ?? data?.topics_count ?? 20;
+  const totalSubj = data?.total_subjects ?? 0;
+  const totalTop = data?.total_topics ?? 0;
+  const topicsInPlan = data?.topics_in_plan ?? 0;
+  const syllabusProgress = clampNumber(Number(data?.syllabus_progress ?? 0), 0, 100);
+
+  const passThreshold = data?.thresholds?.pass ?? 50;
+  const onTrackThreshold = data?.thresholds?.on_track ?? 60;
+  const passBadge = passProb == null
+    ? { label: 'NO DATA', className: '' }
+    : passProb >= onTrackThreshold
+      ? { label: 'ON TRACK', className: 'lime' }
+      : passProb >= passThreshold
+        ? { label: 'AT RISK', className: 'warning' }
+        : { label: 'OFF TRACK', className: 'danger' };
+
+  const simDisplay = simProb == null ? null : clampNumber(Math.round(simProb), 0, 100);
+  const simPass = simDisplay == null ? null : (simIsPass ?? simDisplay >= passThreshold);
 
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+    <div className="animate-fade-in" style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '2rem',
+      opacity: refreshing ? 0.82 : 1,
+      transition: 'opacity 0.22s ease',
+    }} aria-busy={refreshing}>
       {/* 1. Technical Welcome Header Frame */}
       <div className="corner-frame" style={{
         padding: '2rem',
@@ -166,7 +291,7 @@ export default function DashboardView({ onNavigate }) {
         </div>
 
         {optMessage && (
-          <div style={{
+          <div className="animate-fade-in" style={{
             marginTop: '1.25rem',
             padding: '0.75rem 1rem',
             backgroundColor: 'var(--bg-surface-lowest)',
@@ -188,6 +313,8 @@ export default function DashboardView({ onNavigate }) {
         )}
       </div>
 
+      <ReadinessBlock readiness={data?.readiness} />
+
       {/* 2. Four Key Telemetry Metric Cards */}
       <div style={{
         display: 'grid',
@@ -203,22 +330,34 @@ export default function DashboardView({ onNavigate }) {
 
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
             <span className="tag-mono">// PASS PROBABILITY</span>
-            <span className="badge-tech lime">ON TRACK</span>
+            <span className={`badge-tech ${passBadge.className}`}>{passBadge.label}</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.25rem', marginBottom: '0.35rem' }}>
             <span style={{ fontFamily: 'var(--font-heading)', fontSize: '2.6rem', fontWeight: 900, lineHeight: 1 }}>
-              {passProb}
+              {passProb == null ? '—' : passProb}
             </span>
-            <span style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--primary-deep)' }}>%</span>
+            {passProb != null && (
+              <span style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--primary-deep)' }}>%</span>
+            )}
           </div>
 
           <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-            Likelihood of passing your target exam
+            {data?.readiness?.model_available === false
+              ? (data.readiness.warning || 'Pass estimates unavailable — the trained model did not load.')
+              : (data?.readiness?.note || 'Priority-weighted readiness across your planned timetable')}
           </p>
-          <div style={{ marginTop: '0.85rem', width: '100%', height: '6px', backgroundColor: 'var(--bg-surface-high)', borderRadius: '1px', overflow: 'hidden' }}>
-            <div style={{ width: `${Math.min(100, passProb)}%`, height: '100%', backgroundColor: 'var(--primary)', borderRight: '1px solid var(--border-strong)' }} />
-          </div>
+          {passProb != null && (
+            <div style={{ marginTop: '0.85rem', width: '100%', height: '6px', backgroundColor: 'var(--bg-surface-high)', borderRadius: '1px', overflow: 'hidden' }}>
+              <div style={{
+                width: `${Math.min(100, passProb)}%`,
+                height: '100%',
+                backgroundColor: 'var(--primary)',
+                borderRight: '1px solid var(--border-strong)',
+                transition: 'width 0.45s cubic-bezier(0.4, 0, 0.2, 1)',
+              }} />
+            </div>
+          )}
         </div>
 
         {/* Metric 2: Average Topic Mastery */}
@@ -235,16 +374,21 @@ export default function DashboardView({ onNavigate }) {
 
           <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.25rem', marginBottom: '0.35rem' }}>
             <span style={{ fontFamily: 'var(--font-heading)', fontSize: '2.6rem', fontWeight: 900, lineHeight: 1 }}>
-              {avgMastery}
+              {avgMastery == null ? '—' : avgMastery}
             </span>
-            <span style={{ fontSize: '1.4rem', fontWeight: 800 }}>%</span>
+            {avgMastery != null && <span style={{ fontSize: '1.4rem', fontWeight: 800 }}>%</span>}
           </div>
 
           <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
             Average mastery across all your topics
           </p>
           <div style={{ marginTop: '0.85rem', width: '100%', height: '6px', backgroundColor: 'var(--bg-surface-high)', borderRadius: '1px', overflow: 'hidden' }}>
-            <div style={{ width: `${avgMastery}%`, height: '100%', backgroundColor: 'var(--border-strong)' }} />
+            <div style={{
+              width: `${avgMastery ?? 0}%`,
+              height: '100%',
+              backgroundColor: 'var(--border-strong)',
+              transition: 'width 0.45s cubic-bezier(0.4, 0, 0.2, 1)',
+            }} />
           </div>
         </div>
 
@@ -276,6 +420,7 @@ export default function DashboardView({ onNavigate }) {
               height: '100%',
               backgroundColor: 'var(--primary)',
               borderRight: '1px solid var(--border-strong)',
+              transition: 'width 0.45s cubic-bezier(0.4, 0, 0.2, 1)',
             }} />
           </div>
         </div>
@@ -300,10 +445,15 @@ export default function DashboardView({ onNavigate }) {
           </div>
 
           <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-            {totalTop} granular topics tracked
+            {topicsInPlan} of {totalTop} topics in your plan
           </p>
           <div style={{ marginTop: '0.85rem', width: '100%', height: '6px', backgroundColor: 'var(--bg-surface-high)', borderRadius: '1px', overflow: 'hidden' }}>
-            <div style={{ width: '85%', height: '100%', backgroundColor: 'var(--border-strong)' }} />
+            <div style={{
+              width: `${syllabusProgress}%`,
+              height: '100%',
+              backgroundColor: 'var(--border-strong)',
+              transition: 'width 0.45s cubic-bezier(0.4, 0, 0.2, 1)',
+            }} />
           </div>
         </div>
       </div>
@@ -353,21 +503,40 @@ export default function DashboardView({ onNavigate }) {
               border: '1px dashed var(--border-strong)',
             }}>
               <Calendar size={28} style={{ margin: '0 auto 0.75rem', opacity: 0.5 }} />
-              <div className="tag-mono" style={{ fontWeight: 700, color: 'var(--text-main)', marginBottom: '0.35rem' }}>
-                NO SESSIONS DISPATCHED TODAY
-              </div>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
-                Run the ML optimizer to generate an adaptive revision schedule.
-              </p>
-              <button className="btn-lime" onClick={handleMLOptimize}>
-                Generate Timetable
-              </button>
+              {nextSession ? (
+                <>
+                  <div className="tag-mono" style={{ fontWeight: 700, color: 'var(--text-main)', marginBottom: '0.35rem' }}>
+                    NO SESSIONS LEFT TODAY
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                    Next up: {nextSession.date} at {nextSession.start_time} · {nextSession.subject_name}
+                    {nextSession.topic_name ? ` — ${nextSession.topic_name}` : ''}
+                  </p>
+                  <button className="btn-lime" onClick={() => onNavigate?.('study-plan')}>
+                    <span>View Study Plan</span>
+                    <ArrowRight size={15} />
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="tag-mono" style={{ fontWeight: 700, color: 'var(--text-main)', marginBottom: '0.35rem' }}>
+                    NO SESSIONS DISPATCHED TODAY
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1.25rem' }}>
+                    Run the ML optimizer to generate an adaptive revision schedule.
+                  </p>
+                  <button className="btn-lime" onClick={handleMLOptimize} disabled={optimizing}>
+                    {optimizing ? 'Optimising...' : 'Generate Timetable'}
+                  </button>
+                </>
+              )}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {todaySessions.map((session, i) => {
                 const isDone = session.status === 'completed';
                 const isSkipped = session.status === 'skipped';
+                const isBusy = busySessionId === session.id;
                 return (
                   <div
                     key={session.id || i}
@@ -376,10 +545,11 @@ export default function DashboardView({ onNavigate }) {
                       backgroundColor: isDone ? 'var(--bg-surface-low)' : 'var(--bg-surface-lowest)',
                       border: '1.5px solid var(--border-strong)',
                       borderLeft: `5px solid ${isDone ? '#15803d' : isSkipped ? '#b91c1c' : 'var(--primary)'}`,
-                      opacity: isDone || isSkipped ? 0.75 : 1,
+                      opacity: isBusy ? 0.6 : isDone || isSkipped ? 0.75 : 1,
                       display: 'flex',
                       flexDirection: 'column',
                       gap: '0.65rem',
+                      transition: 'opacity 0.2s ease, background-color 0.2s ease, border-color 0.2s ease',
                     }}
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -389,7 +559,8 @@ export default function DashboardView({ onNavigate }) {
                             {session.subject_name || 'Subject'}
                           </span>
                           <span className="tag-mono" style={{ fontSize: '0.65rem' }}>
-                            {session.start_time || '09:00'} - {session.end_time || '10:30'}
+                            {session.start_time || session.time || '--:--'}
+                            {session.end_time ? ` - ${session.end_time}` : ''}
                           </span>
                         </div>
                         <h4 style={{ fontSize: '1rem', textTransform: 'none', fontWeight: 800 }}>
@@ -413,6 +584,7 @@ export default function DashboardView({ onNavigate }) {
                         <button
                           className="btn-lime"
                           onClick={() => handleSessionAction(session.id, 'completed')}
+                          disabled={isBusy}
                           style={{ fontSize: '0.72rem', padding: '0.3rem 0.7rem' }}
                         >
                           <Check size={13} strokeWidth={3} />
@@ -421,6 +593,7 @@ export default function DashboardView({ onNavigate }) {
                         <button
                           className="btn-tech-outline"
                           onClick={() => handleSessionAction(session.id, 'scheduled', 1)}
+                          disabled={isBusy}
                           style={{ fontSize: '0.72rem', padding: '0.3rem 0.7rem' }}
                         >
                           <FastForward size={13} />
@@ -428,7 +601,8 @@ export default function DashboardView({ onNavigate }) {
                         </button>
                         <button
                           className="btn-tech-outline"
-                          onClick={() => handleSessionAction(session.id, 'skipped')}
+                          onClick={() => openSkipModal(session.id, 'skip')}
+                          disabled={isBusy}
                           style={{ fontSize: '0.72rem', padding: '0.3rem 0.7rem', color: '#991b1b' }}
                         >
                           <span>Skip</span>
@@ -550,8 +724,10 @@ export default function DashboardView({ onNavigate }) {
                   max="24"
                   step="0.5"
                   value={simHours}
-                  onChange={(e) => handlePredict(parseFloat(e.target.value), simScore)}
+                  onChange={handleSimHours}
                   className="tech-range"
+                  aria-label="Simulated weekly study hours"
+                  aria-valuetext={`${simHours} hours per week`}
                 />
               </div>
 
@@ -566,35 +742,63 @@ export default function DashboardView({ onNavigate }) {
                   max="100"
                   step="1"
                   value={simScore}
-                  onChange={(e) => handlePredict(simHours, parseFloat(e.target.value))}
+                  onChange={handleSimScore}
                   className="tech-range"
+                  aria-label="Simulated previous exam score"
+                  aria-valuetext={`${simScore} percent`}
                 />
               </div>
 
               {/* Real-time Result Pill */}
-              <div style={{
-                marginTop: '0.5rem',
-                padding: '0.85rem 1.15rem',
-                backgroundColor: 'var(--bg-surface-low)',
-                border: '1.5px solid var(--border-strong)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              }}>
+              <div
+                aria-live="polite"
+                title={simError || undefined}
+                style={{
+                  marginTop: '0.5rem',
+                  padding: '0.85rem 1.15rem',
+                  backgroundColor: 'var(--bg-surface-low)',
+                  border: '1.5px solid var(--border-strong)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.75rem',
+                  transition: 'background-color 0.2s ease, border-color 0.2s ease',
+                }}
+              >
                 <div>
-                  <span className="tag-mono" style={{ display: 'block', fontSize: '0.65rem' }}>PROJECTED OUTCOME</span>
-                  <span style={{ fontFamily: 'var(--font-heading)', fontSize: '1.4rem', fontWeight: 900 }}>
-                    {predicting ? 'CALCULATING...' : `${Math.min(100, Math.max(0, Math.round(simProb ?? passProb)))}% PASS CHANCE`}
+                  <span className="tag-mono" style={{ display: 'block', fontSize: '0.65rem' }}>
+                    PROJECTED OUTCOME{predicting ? ' · SYNCING' : ''}
+                  </span>
+                  <span style={{
+                    fontFamily: 'var(--font-heading)',
+                    fontSize: '1.4rem',
+                    fontWeight: 900,
+                    fontVariantNumeric: 'tabular-nums',
+                    transition: 'color 0.2s ease',
+                  }}>
+                    {simError
+                      ? 'MODEL OFFLINE'
+                      : simDisplay == null
+                        ? (predicting ? 'CALCULATING…' : '—')
+                        : `${simDisplay}% PASS CHANCE`}
                   </span>
                 </div>
-                <span className={`badge-tech ${Math.min(100, Math.max(0, Math.round(simProb ?? passProb))) >= 65 ? 'lime' : 'warning'}`}>
-                  {Math.min(100, Math.max(0, Math.round(simProb ?? passProb))) >= 65 ? 'PASS VERDICT' : 'NEEDS REVISION'}
+                <span className={`badge-tech ${simDisplay == null ? '' : simPass ? 'lime' : 'warning'}`}>
+                  {simDisplay == null
+                    ? (simError ? 'NO ESTIMATE' : predicting ? 'SYNCING' : 'NO ESTIMATE')
+                    : simPass ? 'PASS VERDICT' : 'NEEDS REVISION'}
                 </span>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      <SkipImpactModal
+        skipModal={skipModal}
+        onKeep={() => setSkipModal(null)}
+        onConfirm={confirmSkipOrDelete}
+      />
     </div>
   );
 }

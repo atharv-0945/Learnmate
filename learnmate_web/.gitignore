@@ -2,7 +2,34 @@
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
 .streamlit/secrets.toml
+.npmrc
+.pypirc
+.netrc
+_netrc
+
+# Credentials, tokens, and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+.ssh/
+.aws/
+.azure/
+.kube/
+credentials.json
+credentials*.json
+service-account*.json
+client_secret*.json
+secrets.json
+*.secret
+*.secrets
 
 # Virtual environment
 .venv/
@@ -19,8 +46,17 @@ build/
 
 # Database & local storage
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 *.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 uploads/
 **/uploads/
 

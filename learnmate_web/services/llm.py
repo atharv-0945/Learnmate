@@ -2,13 +2,16 @@
 services/llm.py – Ultra-fast, resilient AI synthesis engine with smart concept extraction.
 
 Features:
-- Seamless Gemini API integration with instant circuit-breaker on 429 quota exhaustion.
-- High-yield NLP concept extractor tailored for lecture PPT slides, PDFs, and notes.
-- True contextual multiple-choice quiz generator with authentic question stems, correct answers,
-  and distractors derived from lecture concepts.
+- Groq LPU as the primary generator (fast, content-grounded quizzes and flashcards),
+  with Gemini as a transparent second provider.
+- Both providers get the extracted document text, so every question and card is
+  grounded in the uploaded material instead of being generated from generic templates.
+- High-yield NLP concept extractor as an offline last resort for lecture slides.
+- True contextual multiple-choice quiz generator with authentic question stems, correct
+  answers, and distractors derived from the material.
 - Spaced-repetition active recall flashcard generator.
-- 100% offline-resilient: if Gemini API key hits daily quota limit, it falls back instantly
-  (<0.02s) without stalling the user or throwing unhandled HTTP errors.
+- Graceful degradation: if both API providers are unavailable, a local extractor keeps
+  the feature usable instead of throwing unhandled HTTP errors.
 """
 from __future__ import annotations
 
@@ -28,9 +31,12 @@ import config
 _COOLDOWN_S = 0.5
 _last_call: float = 0.0
 
-# Circuit breaker for Google GenAI Quota Limits (e.g. 429 RESOURCE_EXHAUSTED)
-_circuit_breaker_active: bool = False
-_circuit_breaker_until: float = 0.0
+# Gemini fallback state. The configured model is tried first, then known-good
+# fallbacks. The last successful model is remembered to keep later calls fast.
+_gemini_active_model: Optional[str] = None
+_gemini_last_error: Optional[str] = None
+_gemini_last_success_at: float = 0.0
+_gemini_backoff_until: float = 0.0
 
 
 def _cooldown() -> None:
@@ -42,49 +48,249 @@ def _cooldown() -> None:
 
 
 def _make_cache_key(subject: str, topic: str, difficulty: str, n: int) -> str:
-    raw = f"{subject}|{topic}|{difficulty}|{n}"
+    # v2 invalidates quizzes cached by the old heuristic fallback so users
+    # never get served the previous generic/random questions again.
+    raw = f"v2|{subject}|{topic}|{difficulty}|{n}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
 _gemini_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="gemini_worker")
 
 
-def _call_gemini_with_timeout(prompt: str, timeout: float = 25.0) -> Optional[str]:
-    """Execute Gemini generate_content with a strict timeout and automatic circuit breaker."""
-    global _circuit_breaker_active, _circuit_breaker_until
+def _gemini_model_candidates() -> list[str]:
+    """Return the configured model, cached good model, and fallbacks in order."""
+    ordered: list[str] = []
+    candidates = [
+        _gemini_active_model,
+        config.GEMINI_MODEL,
+        *getattr(config, "GEMINI_FALLBACK_MODELS", []),
+    ]
+    for name in candidates:
+        clean = (name or "").strip()
+        if clean and clean not in ordered:
+            ordered.append(clean)
+    return ordered
+
+
+def gemini_status() -> dict:
+    """Non-network provider diagnostics for /api/status and troubleshooting."""
+    return {
+        "configured": config.GEMINI_ENABLED,
+        "preferred_model": config.GEMINI_MODEL,
+        "active_model": _gemini_active_model,
+        "candidates": _gemini_model_candidates(),
+        "last_error": _gemini_last_error,
+        "last_success_at": _gemini_last_success_at or None,
+        "backoff_until": _gemini_backoff_until or None,
+    }
+
+
+def _call_gemini_with_timeout(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    timeout: float = 25.0,
+    json_mode: bool = True,
+) -> Optional[str]:
+    """
+    Call Gemini with a strict timeout, model fallback, and no silent model drift.
+
+    Gemini is used as the primary content generator for quizzes/flashcards/topic
+    extraction. If the preferred model is overloaded (503) or retired (404), the
+    next known-good model is tried before falling back to Groq.
+    """
+    global _gemini_active_model, _gemini_last_error
+    global _gemini_last_success_at, _gemini_backoff_until
+
     if not config.GEMINI_ENABLED:
         return None
+    if time.time() < _gemini_backoff_until:
+        return None
 
-    # If circuit breaker is tripped (e.g. daily quota reached), bypass network call immediately
-    if _circuit_breaker_active:
-        if time.time() < _circuit_breaker_until:
-            return None
-        _circuit_breaker_active = False
+    candidates = _gemini_model_candidates()
+    if not candidates:
+        return None
+
+    # Gemini rejects manually configured deadlines below 10 seconds. Keep each
+    # attempt at/above that floor while still fitting the overall request budget.
+    per_model_timeout = max(10.0, min(15.0, timeout / max(1, len(candidates))))
 
     def _invoke():
-        global _circuit_breaker_active, _circuit_breaker_until
+        global _gemini_active_model, _gemini_last_error
+        global _gemini_last_success_at, _gemini_backoff_until
         _cooldown()
+
         try:
             from google import genai
-            client = genai.Client(api_key=config.GEMINI_API_KEY)
-            response = client.models.generate_content(
-                model=config.GEMINI_MODEL,
-                contents=prompt,
-            )
-            return response.text.strip() if response and response.text else None
-        except Exception as e:
-            err_msg = str(e)
-            if "RESOURCE_EXHAUSTED" in err_msg or "429" in err_msg or "Quota exceeded" in err_msg:
-                # Trip circuit breaker for 5 minutes on quota exhaustion
-                _circuit_breaker_active = True
-                _circuit_breaker_until = time.time() + 300
+            from google.genai import types
+        except Exception as exc:
+            _gemini_last_error = f"google-genai import failed: {exc}"
             return None
 
+        try:
+            client = genai.Client(
+                api_key=config.GEMINI_API_KEY,
+                http_options=types.HttpOptions(
+                    timeout=int(per_model_timeout * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                ),
+            )
+        except Exception as exc:
+            _gemini_last_error = f"Gemini client creation failed: {exc}"
+            return None
+
+        errors: list[str] = []
+        for model in candidates:
+            try:
+                generation_config = types.GenerateContentConfig(
+                    system_instruction=system_prompt or None,
+                    temperature=0.2,
+                    max_output_tokens=4000,
+                    response_mime_type="application/json" if json_mode else None,
+                )
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=generation_config,
+                )
+                text = (response.text or "").strip() if response else ""
+                if text:
+                    _gemini_active_model = model
+                    _gemini_last_error = None
+                    _gemini_last_success_at = time.time()
+                    return text
+                errors.append(f"{model}: empty response")
+            except Exception as exc:
+                err_msg = str(exc)
+                errors.append(f"{model}: {err_msg[:240]}")
+                lowered = err_msg.lower()
+                if any(token in lowered for token in (
+                    "resource_exhausted", "quota", "429", "401", "403",
+                    "api key", "permission",
+                )):
+                    # Key/quota problem: retrying other models will not help.
+                    _gemini_last_error = errors[-1]
+                    _gemini_backoff_until = time.time() + 300
+                    return None
+                # 404 / retired model / 503: try the next candidate.
+                continue
+
+        _gemini_last_error = " | ".join(errors[-3:]) if errors else "Gemini returned no text."
+        if any(
+            "503" in error or "unavailable" in error.lower() or "high demand" in error.lower()
+            for error in errors
+        ):
+            # Short cool-down so the next request can use Groq immediately.
+            _gemini_backoff_until = time.time() + 30
+        return None
+
     try:
-        future = _gemini_executor.submit(_invoke)
-        return future.result(timeout=timeout)
+        return _gemini_executor.submit(_invoke).result(timeout=timeout + 2.0)
+    except Exception as exc:
+        _gemini_last_error = f"Gemini timeout: {exc}"
+        return None
+
+
+_groq_executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="groq_worker")
+
+# Preferred first, then broadly available Groq models as fallbacks.
+_GROQ_MODEL_CANDIDATES = (
+    "qwen/qwen3.8-27b",
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+)
+
+_JSON_SYSTEM_PROMPT = (
+    "You are LearnMate's study-content synthesis engine. Read the supplied study "
+    "material carefully and base every item strictly on facts stated in it. Never "
+    "invent facts and never ask generic questions about the document itself. Reply "
+    "with valid JSON only: no markdown fences, no preamble, no commentary."
+)
+
+
+def _call_groq_with_timeout(
+    prompt: str,
+    system_prompt: str = _JSON_SYSTEM_PROMPT,
+    timeout: float = 45.0,
+) -> Optional[str]:
+    """Call Groq (LPU) with a hard timeout and model fallback. Returns None on failure."""
+    if not config.GROQ_ENABLED:
+        return None
+
+    preferred = (config.GROQ_MODEL or _GROQ_MODEL_CANDIDATES[0]).strip()
+    models = [preferred] + [m for m in _GROQ_MODEL_CANDIDATES if m != preferred]
+
+    def _invoke():
+        try:
+            from groq import Groq
+            client = Groq(api_key=config.GROQ_API_KEY)
+        except Exception:
+            return None
+
+        for model in models:
+            try:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=4000,
+                )
+                text = (completion.choices[0].message.content or "").strip()
+                if text:
+                    return text
+            except Exception:
+                continue
+        return None
+
+    try:
+        return _groq_executor.submit(_invoke).result(timeout=timeout)
     except Exception:
         return None
+
+
+def _call_ai(
+    prompt: str,
+    system_prompt: str = _JSON_SYSTEM_PROMPT,
+    timeout: float = 45.0,
+    preferred: str = "gemini",
+) -> tuple[Optional[str], Optional[str]]:
+    """
+    Call the best provider for the task.
+
+    Study-content synthesis defaults to Gemini (per the product design), then
+    Groq. Pass preferred="groq" for latency-sensitive tasks such as doubts.
+    """
+    providers = ("gemini", "groq") if preferred == "gemini" else ("groq", "gemini")
+    for provider in providers:
+        if provider == "gemini":
+            raw = _call_gemini_with_timeout(
+                prompt,
+                system_prompt=system_prompt,
+                timeout=timeout,
+                json_mode=True,
+            )
+        else:
+            raw = _call_groq_with_timeout(
+                prompt,
+                system_prompt=system_prompt,
+                timeout=timeout,
+            )
+        if raw:
+            if provider == "groq" and preferred == "gemini" and _gemini_last_error:
+                print(f"[LLM] Gemini unavailable, using Groq fallback: {_gemini_last_error}")
+            return raw, provider
+
+    return None, None
+
+
+def provider_error(provider: Optional[str]) -> Optional[str]:
+    """Return the last Gemini error when a request had to fall back to Groq."""
+    if provider and provider != "gemini":
+        return _gemini_last_error
+    return None
 
 
 def _clean_json_raw(raw: str) -> str:
@@ -93,6 +299,24 @@ def _clean_json_raw(raw: str) -> str:
         lines = raw.splitlines()
         raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
     return raw.strip()
+
+
+def _loads_json(raw: str):
+    """Parse JSON even if the model wrapped it in prose or code fences."""
+    clean = _clean_json_raw(raw)
+    try:
+        return json.loads(clean)
+    except Exception:
+        pass
+
+    match = re.search(r"(\[.*\]|\{.*\})", clean, re.DOTALL)
+    if not match:
+        return None
+    fragment = re.sub(r",\s*([\]}])", r"\1", match.group(1))
+    try:
+        return json.loads(fragment)
+    except Exception:
+        return None
 
 
 def _validate_quiz_json(data: object) -> tuple[bool, list[dict]]:
@@ -176,7 +400,7 @@ def _extract_document_concepts(document_text: str) -> list[dict]:
                     continue
 
             # Pattern 2: "Term is / are / refers to / defines / computes / optimizes / measures / represents ..."
-            verb_match = re.match(r"^([A-Z0-9][\w\s\(\)\/\-]{1,35})\s+(is defined as|refers to|is a type of|is an|is a|means|represents|computes|measures|optimizes|denotes|are defined as|are types of|are a|are an|are)\s+(.+)$", line, re.IGNORECASE)
+            verb_match = re.match(r"^([A-Z0-9][\w\s\(\)\/\-]{1,35})\s+(is defined as|refers to|is a type of|is the|is an|is a|means|represents|computes|measures|optimizes|denotes|are defined as|are types of|are the|are a|are an|are)\s+(.+)$", line, re.IGNORECASE)
             if verb_match:
                 term = verb_match.group(1).strip()
                 verb = verb_match.group(2).strip()
@@ -184,7 +408,10 @@ def _extract_document_concepts(document_text: str) -> list[dict]:
                 t_lower = term.lower()
                 if len(rest) > 10 and t_lower not in seen_terms:
                     seen_terms.add(t_lower)
-                    full_def = f"{verb.capitalize()} {rest}"
+                    if verb.lower() in ("is the", "are the"):
+                        full_def = f"The {rest}"
+                    else:
+                        full_def = f"{verb.capitalize()} {rest}"
                     concepts.append({
                         "term": term,
                         "definition": full_def,
@@ -255,9 +482,10 @@ def generate_quiz(
             pass
 
     prompt = (
-        f"Generate exactly {n_questions} multiple-choice questions about "
+        f"Generate exactly {n_questions} exam-quality multiple-choice questions about "
         f'"{topic}" in the subject "{subject}". '
         f"Difficulty: {difficulty}. "
+        "Test real conceptual understanding, not generic study advice. "
         "Return ONLY a valid JSON array. Each element must have:\n"
         '  "question": string,\n'
         '  "options": array of exactly 4 strings,\n'
@@ -268,15 +496,19 @@ def generate_quiz(
         "No markdown code fences, no text outside JSON."
     )
 
-    raw = _call_gemini_with_timeout(prompt, timeout=2.5)
+    raw, provider = _call_ai(prompt, timeout=45.0)
     if raw:
-        try:
-            data = json.loads(_clean_json_raw(raw))
-            ok, questions = _validate_quiz_json(data)
-            if ok and len(questions) >= n_questions:
-                return {"ok": True, "questions": questions[:n_questions], "error": None, "cached": False}
-        except Exception:
-            pass
+        data = _loads_json(raw)
+        ok, questions = _validate_quiz_json(data)
+        if ok and len(questions) >= n_questions:
+            return {
+                "ok": True,
+                "questions": questions[:n_questions],
+                "error": None,
+                "cached": False,
+                "provider": provider,
+                "provider_error": provider_error(provider),
+            }
 
     # Instant high-yield domain fallback questions pool
     q_pool = [
@@ -413,7 +645,14 @@ def generate_quiz(
     ]
 
     # Return required number of questions
-    return {"ok": True, "questions": q_pool[:n_questions], "error": None, "cached": False}
+    return {
+        "ok": True,
+        "questions": q_pool[:n_questions],
+        "error": None,
+        "cached": False,
+        "provider": "offline",
+        "provider_error": _gemini_last_error,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,36 +729,61 @@ def generate_flashcards(document_text: str, n_cards: int = 10) -> dict:
     if not document_text or not document_text.strip():
         return {"ok": False, "cards": [], "error": "Document text is empty."}
 
-    text_snippet = document_text[:10_000]
+    text_snippet = document_text[:14_000]
 
-    if config.GEMINI_ENABLED:
-        prompt = (
-            f"Extract exactly {n_cards} high-yield active recall flashcards from this lecture material.\n"
-            f"Return ONLY a valid JSON array of objects with:\n"
-            '  "front": string (concise question or term),\n'
-            '  "back": string (clear definition or explanation, 1-3 sentences),\n'
-            '  "difficulty": string ("easy", "medium", or "hard").\n'
-            f"DOCUMENT:\n{text_snippet}"
-        )
+    prompt = (
+        f"Create exactly {n_cards} high-yield active-recall flashcards from the study "
+        "material below.\n"
+        "Rules:\n"
+        "- Each card must cover a distinct fact, term, process, or relationship stated in the material.\n"
+        "- The front must be a specific question or term; never ask about the document itself.\n"
+        "- The back must be a concise, accurate answer in 1-3 sentences using the material's terminology.\n"
+        "- Do not invent facts that are not in the material.\n"
+        "Return ONLY a JSON array of objects with:\n"
+        '  "front": string,\n'
+        '  "back": string,\n'
+        '  "difficulty": string ("easy", "medium", or "hard"),\n'
+        '  "topic": string.\n'
+        f"STUDY MATERIAL:\n<<<\n{text_snippet}\n>>>"
+    )
 
-        raw = _call_gemini_with_timeout(prompt, timeout=2.5)
-        if raw:
-            try:
-                data = json.loads(_clean_json_raw(raw))
-                if isinstance(data, list):
-                    valid = []
-                    for item in data:
-                        if isinstance(item, dict) and "front" in item and "back" in item:
-                            item.setdefault("difficulty", "medium")
-                            valid.append(item)
-                    if valid and len(valid) >= min(3, n_cards):
-                        return {"ok": True, "cards": valid[:n_cards], "error": None}
-            except Exception:
-                pass
+    raw, provider = _call_ai(prompt, timeout=45.0)
+    if raw:
+        data = _loads_json(raw)
+        if isinstance(data, list):
+            valid = []
+            seen_fronts = set()
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                front = str(item.get("front", "")).strip()
+                back = str(item.get("back", "")).strip()
+                if not front or not back or front.lower() in seen_fronts:
+                    continue
+                seen_fronts.add(front.lower())
+                item["front"] = front
+                item["back"] = back
+                item.setdefault("difficulty", "medium")
+                item.setdefault("topic", "Core Concept")
+                valid.append(item)
+            if valid and len(valid) >= min(3, n_cards):
+                return {
+                    "ok": True,
+                    "cards": valid[:n_cards],
+                    "error": None,
+                    "provider": provider,
+                    "provider_error": provider_error(provider),
+                }
 
-    # Instant smart local fallback
+    # Last resort only: keep the feature usable if both AI providers are down.
     fallback_cards = _generate_fallback_flashcards(document_text, n_cards=n_cards)
-    return {"ok": True, "cards": fallback_cards, "error": None}
+    return {
+        "ok": True,
+        "cards": fallback_cards,
+        "error": None,
+        "provider": "offline",
+        "provider_error": _gemini_last_error,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -627,35 +891,51 @@ def generate_quiz_from_text(document_text: str, n_questions: int = 5, difficulty
     if not document_text or not document_text.strip():
         return {"ok": False, "questions": [], "error": "Document text is empty."}
 
-    text_snippet = document_text[:10_000]
+    text_snippet = document_text[:14_000]
 
-    if config.GEMINI_ENABLED:
-        prompt = (
-            f"Read the following lecture document and create exactly {n_questions} "
-            f"multiple-choice questions at {difficulty} difficulty.\n\n"
-            "Return ONLY a valid JSON array. Each element must have:\n"
-            '  "question": string,\n'
-            '  "options": array of exactly 4 strings,\n'
-            '  "correct_index": integer (0-3),\n'
-            '  "explanation": string (brief rationale),\n'
-            '  "topic": string (specific concept or chapter),\n'
-            f'  "difficulty": "{difficulty}".\n'
-            f"DOCUMENT:\n{text_snippet}"
-        )
+    prompt = (
+        f"Create exactly {n_questions} multiple-choice questions from the study "
+        f"material below at {difficulty} difficulty.\n"
+        "Rules:\n"
+        "- Every question must be answerable using only facts stated in the material.\n"
+        "- Test the actual concepts, definitions, processes, and relationships in it.\n"
+        "- Use precise terminology from the material; do not mention 'the document', "
+        "'the slides', or 'the text' in a question.\n"
+        "- Wrong options must be plausible but clearly incorrect.\n"
+        "Return ONLY a valid JSON array. Each element must have:\n"
+        '  "question": string,\n'
+        '  "options": array of exactly 4 strings,\n'
+        '  "correct_index": integer (0-3),\n'
+        '  "explanation": string (brief rationale),\n'
+        '  "topic": string (specific concept or chapter),\n'
+        f'  "difficulty": "{difficulty}".\n'
+        f"STUDY MATERIAL:\n<<<\n{text_snippet}\n>>>"
+    )
 
-        raw = _call_gemini_with_timeout(prompt, timeout=2.5)
-        if raw:
-            try:
-                data = json.loads(_clean_json_raw(raw))
-                ok, questions = _validate_quiz_json(data)
-                if ok and len(questions) >= min(3, n_questions):
-                    return {"ok": True, "questions": questions[:n_questions], "error": None, "cached": False}
-            except Exception:
-                pass
+    raw, provider = _call_ai(prompt, timeout=45.0)
+    if raw:
+        data = _loads_json(raw)
+        ok, questions = _validate_quiz_json(data)
+        if ok and len(questions) >= min(3, n_questions):
+            return {
+                "ok": True,
+                "questions": questions[:n_questions],
+                "error": None,
+                "cached": False,
+                "provider": provider,
+                "provider_error": provider_error(provider),
+            }
 
-    # Instant smart local fallback
+    # Last resort only: keep the feature usable if both AI providers are down.
     fallback_q = _generate_fallback_quiz_from_text(document_text, n_questions=n_questions, difficulty=difficulty)
-    return {"ok": True, "questions": fallback_q, "error": None, "cached": False}
+    return {
+        "ok": True,
+        "questions": fallback_q,
+        "error": None,
+        "cached": False,
+        "provider": "offline",
+        "provider_error": _gemini_last_error,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -667,36 +947,43 @@ def extract_topics_from_text(document_text: str, default_subject: str = "Uploade
     if not document_text or not document_text.strip():
         return {"ok": False, "subject_name": default_subject, "topics": [], "error": "Document text is empty."}
 
-    text_snippet = document_text[:10_000]
+    text_snippet = document_text[:14_000]
 
-    if config.GEMINI_ENABLED:
-        prompt = (
-            "Analyze the following lecture notes/PPT. Extract a concise Subject Name and 5-8 key topics.\n"
-            "Return ONLY a valid JSON object with:\n"
-            '  "subject_name": string,\n'
-            '  "topics": array of objects with "name": string, "difficulty": "easy"|"medium"|"hard", "estimated_min": integer\n'
-            f"DOCUMENT:\n{text_snippet}"
-        )
+    prompt = (
+        "Analyze the study material below and identify its subject and main chapters.\n"
+        "Rules:\n"
+        "- Use the actual terminology and structure of the material.\n"
+        "- Return 5-8 distinct topics that together cover the material.\n"
+        "Return ONLY a valid JSON object with:\n"
+        '  "subject_name": string,\n'
+        '  "topics": array of objects with "name": string, '
+        '"difficulty": "easy"|"medium"|"hard", "estimated_min": integer\n'
+        f"STUDY MATERIAL:\n<<<\n{text_snippet}\n>>>"
+    )
 
-        raw = _call_gemini_with_timeout(prompt, timeout=2.5)
-        if raw:
-            try:
-                data = json.loads(_clean_json_raw(raw))
-                if isinstance(data, dict) and "topics" in data and isinstance(data["topics"], list):
-                    subj_name = data.get("subject_name", default_subject).strip() or default_subject
-                    topics = []
-                    for t in data["topics"]:
-                        if isinstance(t, dict) and t.get("name"):
-                            topics.append({
-                                "name": str(t["name"]).strip(),
-                                "difficulty": str(t.get("difficulty", "medium")).lower(),
-                                "estimated_min": int(t.get("estimated_min", 60)),
-                                "confidence": 50.0,
-                            })
-                    if topics:
-                        return {"ok": True, "subject_name": subj_name, "topics": topics, "error": None}
-            except Exception:
-                pass
+    raw, _provider = _call_ai(prompt, timeout=45.0)
+    if raw:
+        data = _loads_json(raw)
+        if isinstance(data, dict) and isinstance(data.get("topics"), list):
+            subj_name = str(data.get("subject_name", default_subject)).strip() or default_subject
+            topics = []
+            for t in data["topics"]:
+                if isinstance(t, dict) and t.get("name"):
+                    topics.append({
+                        "name": str(t["name"]).strip(),
+                        "difficulty": str(t.get("difficulty", "medium")).lower(),
+                        "estimated_min": int(t.get("estimated_min", 60)),
+                        "confidence": 50.0,
+                    })
+            if topics:
+                return {
+                    "ok": True,
+                    "subject_name": subj_name,
+                    "topics": topics,
+                    "error": None,
+                    "provider": _provider,
+                    "provider_error": provider_error(_provider),
+                }
 
     # Instant heuristic extraction: extract slide headers or bullet titles
     lines = [l.strip() for l in document_text.splitlines() if l.strip()]
@@ -718,4 +1005,11 @@ def extract_topics_from_text(document_text: str, default_subject: str = "Uploade
         {"name": name, "difficulty": "medium", "estimated_min": 60, "confidence": 50.0}
         for name in candidate_topics
     ]
-    return {"ok": True, "subject_name": default_subject, "topics": topics, "error": None}
+    return {
+        "ok": True,
+        "subject_name": default_subject,
+        "topics": topics,
+        "error": None,
+        "provider": "offline",
+        "provider_error": _gemini_last_error,
+    }

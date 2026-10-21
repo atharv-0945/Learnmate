@@ -73,11 +73,14 @@ def _generate_slots(
     session_min: int,
     break_min: int,
     start_hour: int = 9,
+    not_before: Optional[datetime] = None,
 ) -> list[tuple[datetime, datetime]]:
     """
     Yield (session_start, session_end) pairs.
     Slots are placed greedily from start_hour each study day.
     A break of break_min is inserted between consecutive sessions on the same day.
+    Slots that begin before `not_before` are skipped so re-optimising never
+    creates sessions in the past.
     """
     DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     allowed_weekdays = {DAY_NAMES.index(d) for d in study_days if d in DAY_NAMES}
@@ -97,7 +100,8 @@ def _generate_slots(
                     if minutes_left < session_min:
                         break
                 slot_end = slot_start + timedelta(minutes=session_min)
-                slots.append((slot_start, slot_end))
+                if not_before is None or slot_start >= not_before:
+                    slots.append((slot_start, slot_end))
                 slot_start = slot_end
                 minutes_left -= session_min
                 first_slot = False
@@ -170,20 +174,26 @@ def build_plan(db_session, user_id: int) -> dict:
     # Generate slots up to (last_exam − revision_period)
     revision_days = max(1, int(max_days * REVISION_RESERVE_FRACTION))
     plan_end = last_exam - timedelta(days=revision_days)
+    now_utc = datetime.now(timezone.utc)
     slots = _generate_slots(
         today, plan_end, study_days,
         user.hours_per_day, user.session_min, user.break_min,
+        not_before=now_utc,
     )
+    if not slots:
+        return {
+            "created": 0,
+            "warning": "No study slots left before the revision period. "
+                       "Try adding study days/hours or check your exam dates.",
+            "sessions": [],
+        }
 
-    # Delete only future *scheduled* sessions (never touch completed/skipped/missed)
-    from sqlalchemy import and_
-    now_iso = datetime.now(timezone.utc).isoformat()
+    # Rebuild the pending plan. Completed/skipped history is preserved.
     old_scheduled = (
         db_session.query(Session)
         .filter(
             Session.user_id == user_id,
             Session.status == "scheduled",
-            Session.scheduled_start >= now_iso,
         )
         .all()
     )
@@ -228,6 +238,46 @@ def build_plan(db_session, user_id: int) -> dict:
         )
 
     return {"created": len(created_sessions), "warning": warning, "sessions": created_sessions}
+
+
+def schedule_count_for_subject(db_session, user_id: int, subject, count: int) -> int:
+    """Place `count` sessions for one subject between today and its exam date."""
+    from db.models import User, Topic, Session
+
+    if count <= 0:
+        return 0
+    user = db_session.get(User, user_id)
+    if user is None:
+        return 0
+    study_days = [d.strip() for d in user.study_days.split(",") if d.strip()]
+    today = date.today()
+    try:
+        exam_dt = date.fromisoformat(subject.exam_date)
+    except ValueError:
+        exam_dt = today + timedelta(days=30)
+    plan_end = max(today, exam_dt - timedelta(days=1))
+    slots = _generate_slots(
+        today, plan_end, study_days,
+        user.hours_per_day, user.session_min, user.break_min,
+    )
+    topics = [t for t in (subject.topics or []) if t.status != "done"]
+    if not topics:
+        topics = list(subject.topics or [])
+    created = 0
+    for i, (slot_start, slot_end) in enumerate(slots[:count]):
+        topic = topics[i % len(topics)] if topics else None
+        dur = int((slot_end - slot_start).total_seconds() / 60)
+        db_session.add(Session(
+            user_id=user_id,
+            subject_id=subject.id,
+            topic_id=topic.id if topic is not None else None,
+            scheduled_start=slot_start.isoformat(),
+            scheduled_end=slot_end.isoformat(),
+            duration_min=dur or user.session_min,
+            status="scheduled",
+        ))
+        created += 1
+    return created
 
 
 # ──────────────────────────────────────────────────────────────

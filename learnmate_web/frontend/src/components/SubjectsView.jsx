@@ -27,9 +27,12 @@ export default function SubjectsView() {
     new Date(Date.now() + 45 * 86400000).toISOString().slice(0, 10)
   );
   const [newPriority, setNewPriority] = useState(1);
+  const [newPrevScore, setNewPrevScore] = useState('');
   const [newTopicsText, setNewTopicsText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [suggestion, setSuggestion] = useState(null);
+  const [acceptSuggested, setAcceptSuggested] = useState(null);
 
   // Inline Add Topic state
   const [addingTopicSubjId, setAddingTopicSubjId] = useState(null);
@@ -41,6 +44,27 @@ export default function SubjectsView() {
   useEffect(() => {
     loadSubjects();
   }, []);
+
+  useEffect(() => {
+    const score = parseFloat(newPrevScore);
+    if (!newExamDate || Number.isNaN(score) || score < 0 || score > 100) {
+      setSuggestion(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.getSessionSuggestion(score);
+        if (!cancelled) setSuggestion(res);
+      } catch {
+        if (!cancelled) setSuggestion(null);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [newPrevScore, newExamDate]);
 
   const loadSubjects = async () => {
     try {
@@ -72,16 +96,28 @@ export default function SubjectsView() {
 
     try {
       setSubmitting(true);
-      await api.createSubject({
+      const prevScore = parseFloat(newPrevScore);
+      if (Number.isNaN(prevScore) || prevScore < 0 || prevScore > 100) {
+        alert('Previous score must be between 0 and 100.');
+        return;
+      }
+      const res = await api.createSubject({
         name: newSubjName.trim(),
         exam_date: newExamDate,
         priority: newPriority,
+        previous_score: prevScore,
         topics: topicLines,
+        accept_suggested_sessions: acceptSuggested === true,
+        suggested_session_count: suggestion?.suggested_session_count ?? null,
       });
       setShowAddModal(false);
       setNewSubjName('');
       setNewTopicsText('');
-      setMsg(`SUCCESS: Registered '${newSubjName}' with ${topicLines.length} topics.`);
+      setNewPrevScore('');
+      setSuggestion(null);
+      setAcceptSuggested(null);
+      const extra = res.sessions_created ? ` · ${res.sessions_created} sessions scheduled.` : '';
+      setMsg(`SUCCESS: Registered '${newSubjName}' with ${topicLines.length} topics.${extra}`);
       loadSubjects();
     } catch (err) {
       alert(err.message);
@@ -282,6 +318,7 @@ export default function SubjectsView() {
                       </div>
                       <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
                         EXAM DATE: {subj.exam_date || 'TBD'} · {topicCount} CHAPTERS · MASTERY {avgConf}%
+                        {subj.previous_score != null ? ` · PREV SCORE ${subj.previous_score}` : ''}
                       </div>
                     </div>
                   </div>
@@ -436,18 +473,16 @@ export default function SubjectsView() {
       {/* 3. Register Subject Modal */}
       {showAddModal && (
         <div className="tech-modal-overlay">
-          <div className="tech-modal-card">
+          <div className="tech-modal-card subject-form-modal">
             <span className="crosshair-corner top-left">┼</span>
             <span className="crosshair-corner top-right">┼</span>
             <span className="crosshair-corner bottom-left">┼</span>
             <span className="crosshair-corner bottom-right">┼</span>
 
-            <div style={{
+            <div className="subject-form-modal__header" style={{
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              paddingBottom: '1rem',
-              marginBottom: '1.5rem',
               borderBottom: '1.5px solid var(--border-strong)',
             }}>
               <div>
@@ -465,7 +500,8 @@ export default function SubjectsView() {
               </button>
             </div>
 
-            <form onSubmit={handleCreateSubject} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <form onSubmit={handleCreateSubject} className="subject-form-modal__form">
+              <div className="subject-form-modal__body">
               <div>
                 <label className="tag-mono" style={{ display: 'block', marginBottom: '0.4rem' }}>
                   SUBJECT NAME *
@@ -490,23 +526,82 @@ export default function SubjectsView() {
                     value={newExamDate}
                     onChange={(e) => setNewExamDate(e.target.value)}
                     className="tech-input"
+                    required
                   />
                 </div>
                 <div>
                   <label className="tag-mono" style={{ display: 'block', marginBottom: '0.4rem' }}>
-                    IMPORTANCE PRIORITY
+                    PREVIOUS SCORE (0–100) *
                   </label>
-                  <select
-                    value={newPriority}
-                    onChange={(e) => setNewPriority(parseInt(e.target.value))}
-                    className="tech-select"
-                  >
-                    <option value={1}>High Priority (1)</option>
-                    <option value={2}>Medium Priority (2)</option>
-                    <option value={3}>Low Priority (3)</option>
-                  </select>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    placeholder="e.g. 68"
+                    value={newPrevScore}
+                    onChange={(e) => {
+                      setNewPrevScore(e.target.value);
+                      setAcceptSuggested(null);
+                    }}
+                    className="tech-input"
+                    required
+                  />
                 </div>
               </div>
+
+              <div>
+                <label className="tag-mono" style={{ display: 'block', marginBottom: '0.4rem' }}>
+                  IMPORTANCE PRIORITY
+                </label>
+                <select
+                  value={newPriority}
+                  onChange={(e) => setNewPriority(parseInt(e.target.value))}
+                  className="tech-select"
+                >
+                  <option value={1}>High Priority (1)</option>
+                  <option value={2}>Medium Priority (2)</option>
+                  <option value={3}>Low Priority (3)</option>
+                </select>
+              </div>
+
+              {suggestion && suggestion.suggested_session_count != null && (
+                <div className="corner-frame" style={{ padding: '1.15rem', backgroundColor: 'var(--bg-surface-low)' }}>
+                  <span className="corner-bracket top-left">┌</span>
+                  <span className="corner-bracket top-right">┐</span>
+                  <span className="corner-bracket bottom-left">└</span>
+                  <span className="corner-bracket bottom-right">┘</span>
+                  <div className="tag-mono" style={{ marginBottom: '0.5rem' }}>// SESSION SUGGESTION</div>
+                  <div style={{ fontFamily: 'var(--font-heading)', fontWeight: 800, fontSize: '1.05rem', marginBottom: '0.35rem' }}>
+                    {suggestion.suggested_session_count} sessions
+                    {suggestion.pass_probability != null ? ` · ${Math.round(suggestion.pass_probability)}% estimated pass chance` : ''}
+                  </div>
+                  <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.85rem' }}>
+                    Benchmark {suggestion.benchmark_hours} hrs for students like you
+                    {suggestion.projected_hours != null ? ` · ${suggestion.projected_hours} hrs if you accept` : ''}.
+                    <span className="tag-mono" style={{ marginLeft: '0.4rem', fontSize: '0.62rem' }}>estimate only</span>
+                  </p>
+                  {suggestion.warning && (
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>{suggestion.warning}</p>
+                  )}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.65rem' }}>
+                    <button
+                      type="button"
+                      className={acceptSuggested === true ? 'btn-lime' : 'btn-tech-outline'}
+                      onClick={() => setAcceptSuggested(true)}
+                    >
+                      Accept suggestion
+                    </button>
+                    <button
+                      type="button"
+                      className={acceptSuggested === false ? 'btn-lime' : 'btn-tech-outline'}
+                      onClick={() => setAcceptSuggested(false)}
+                    >
+                      Adjust manually
+                    </button>
+                  </div>
+                </div>
+              )}
 
               <div>
                 <label className="tag-mono" style={{ display: 'block', marginBottom: '0.4rem' }}>
@@ -525,14 +620,9 @@ export default function SubjectsView() {
                 </span>
               </div>
 
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'flex-end',
-                gap: '0.75rem',
-                paddingTop: '1rem',
-                borderTop: '1.5px solid var(--border-strong)',
-              }}>
+              </div>
+
+              <div className="subject-form-modal__footer">
                 <button
                   type="button"
                   className="btn-tech-outline"

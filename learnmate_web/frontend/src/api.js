@@ -53,6 +53,10 @@ export const optimizePlanML = (customWeakTopics) => fetchJson('/study-plan/ml-op
   body: JSON.stringify({ custom_weak_topics: customWeakTopics || [] }),
 });
 export const updateSession = (id, data) => fetchJson(`/sessions/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+export const previewSessionSkip = (id) => fetchJson(`/sessions/${id}/skip-preview`);
+export const deleteSession = (id) => fetchJson(`/sessions/${id}`, { method: 'DELETE' });
+export const getSessionSuggestion = (previousScore) => fetchJson(`/predictor/suggest?previous_score=${encodeURIComponent(previousScore)}`);
+export const getReadiness = () => fetchJson('/predictor/readiness');
 export const getMLDiagnostic = () => fetchJson('/ml-diagnostic');
 
 // ── Quizzes ──
@@ -87,6 +91,11 @@ export const predictModel = (studyHours, prevScore) => fetchJson('/model/predict
   body: JSON.stringify({ study_hours: studyHours, prev_exam_score: prevScore }),
 });
 export const getModelMeta = () => fetchJson('/model/meta');
+export const getVisualiserOverview = () => fetchJson('/model-visualiser/overview');
+export const getVisualiserState = (studyHours, previousScore) => fetchJson('/model-visualiser/state', {
+  method: 'POST',
+  body: JSON.stringify({ study_hours: studyHours, previous_score: previousScore }),
+});
 
 // ── AI Doubt Solver (Groq LPU) ──
 export const solveDoubt = (data) => fetchJson('/doubts/solve', { method: 'POST', body: JSON.stringify(data) });

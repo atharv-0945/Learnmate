@@ -47,9 +47,10 @@ class Subject(Base):
 
     id          = Column(Integer, primary_key=True)
     user_id     = Column(Integer, ForeignKey("users.id"), nullable=False)
-    name        = Column(String(120), nullable=False)
-    exam_date   = Column(String(16), nullable=False)   # ISO date string YYYY-MM-DD
-    priority    = Column(Integer, default=1)           # 1 = high … 3 = low
+    name            = Column(String(120), nullable=False)
+    exam_date       = Column(String(16), nullable=False)   # ISO date string YYYY-MM-DD
+    priority        = Column(Integer, default=1)           # 1 = high … 3 = low
+    previous_score  = Column(Float, nullable=True)         # last exam score 0–100
 
     user        = relationship("User",    back_populates="subjects")
     topics      = relationship("Topic",   back_populates="subject", cascade="all, delete-orphan")

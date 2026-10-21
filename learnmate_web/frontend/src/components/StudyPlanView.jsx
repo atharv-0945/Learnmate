@@ -1,59 +1,127 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Calendar,
   Clock,
   Check,
   FastForward,
   RotateCcw,
-  Sparkles,
   Flame,
   FileBarChart,
   ChevronLeft,
   ChevronRight,
   X,
-  AlertTriangle,
-  Brain,
-  Sliders,
-  Terminal,
-  Activity
+  Trash2
 } from 'lucide-react';
 import * as api from '../api';
+import { ReadinessBlock, SubjectPassCards, SkipImpactModal } from './PassChance';
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+const localDateStr = (date = new Date()) => (
+  `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+);
+
+const parseDay = (dateStr) => new Date(`${dateStr}T12:00:00`);
+
+const sessionDate = (session) => (
+  session?.date || session?.scheduled_start?.slice(0, 10) || ''
+);
+
+const getWeekRange = (dateStr) => {
+  const base = parseDay(dateStr);
+  const day = base.getDay();
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  const monday = new Date(base);
+  monday.setDate(base.getDate() + diffToMonday);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return { start: localDateStr(monday), end: localDateStr(sunday) };
+};
+
+const formatReadinessLine = (before, after) => {
+  if (before == null || after == null) return '';
+  const delta = after - before;
+  if (Math.abs(delta) < 0.5) return ` Readiness steady at ${Math.round(after)}%.`;
+  return ` Readiness ${Math.round(before)}% → ${Math.round(after)}% (${delta >= 0 ? '+' : ''}${Math.round(delta)} pts).`;
+};
+
+const isUpcomingSession = (session) => (
+  session?.status === 'scheduled'
+  && Boolean(session.scheduled_start)
+  && new Date(session.scheduled_start).getTime() >= Date.now()
+);
 
 export default function StudyPlanView() {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [viewMode, setViewMode] = useState('day'); // 'day' | 'week'
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().slice(0, 10));
+  const [selectedDate, setSelectedDate] = useState(() => localDateStr());
   const [actionLoading, setActionLoading] = useState(false);
   const [alertMsg, setAlertMsg] = useState(null);
+  const [readiness, setReadiness] = useState(null);
+  const [skipModal, setSkipModal] = useState(null);
+  const [busySessionId, setBusySessionId] = useState(null);
+  const loadSeq = useRef(0);
 
   // Diagnostic Report Modal state
   const [showReport, setShowReport] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
 
-  useEffect(() => {
-    loadSessions();
-  }, [selectedDate, viewMode]);
-
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async ({ silent = false } = {}) => {
+    const seq = loadSeq.current + 1;
+    loadSeq.current = seq;
     try {
-      setLoading(true);
-      const res = await api.getStudyPlan(viewMode === 'day' ? selectedDate : null);
-      setSessions(res.sessions || []);
+      if (silent) setRefreshing(true); else setLoading(true);
+      const res = await api.getStudyPlan();
+      if (seq !== loadSeq.current) return null;
+      const allSessions = res.sessions || [];
+      setSessions(allSessions);
+      if (res.readiness) setReadiness(res.readiness);
+      return { ...res, sessions: allSessions };
     } catch (err) {
       console.error(err);
+      return null;
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
+  }, []);
+
+  useEffect(() => {
+    loadSessions();
+  }, [loadSessions]);
+
+  const jumpToUpcoming = (allSessions) => {
+    const upcoming = (allSessions || []).find(isUpcomingSession);
+    if (!upcoming) return null;
+    setSelectedDate(sessionDate(upcoming));
+    setViewMode('day');
+    return upcoming;
   };
 
   const handleStandardGenerate = async () => {
     try {
       setActionLoading(true);
+      setAlertMsg(null);
+      const before = readiness?.overall_pass_probability;
       const res = await api.generateStandardPlan();
-      setAlertMsg(`Done! Created ${res.created} study sessions across your active syllabus.`);
-      loadSessions();
+      const reloaded = await loadSessions({ silent: true });
+      const after = reloaded?.readiness?.overall_pass_probability
+        ?? res.readiness?.overall_pass_probability;
+      if (res.created) {
+        jumpToUpcoming(reloaded?.sessions || []);
+        setAlertMsg(
+          `Plan regenerated: ${res.created} study sessions.`
+          + formatReadinessLine(before, after)
+          + (res.warning ? ` ${res.warning}` : '')
+        );
+      } else {
+        setAlertMsg(res.warning || 'No new sessions were created — your plan is already up to date.');
+      }
     } catch (err) {
       setAlertMsg(`Error: ${err.message}`);
     } finally {
@@ -64,9 +132,22 @@ export default function StudyPlanView() {
   const handleMLOptimize = async () => {
     try {
       setActionLoading(true);
+      setAlertMsg(null);
       const res = await api.optimizePlanML([]);
-      setAlertMsg(`Plan optimized! Scheduled ${res.created} sessions (${res.weak_sessions_scheduled} extra slots added for your weaker topics).`);
-      loadSessions();
+      const reloaded = await loadSessions({ silent: true });
+      const after = reloaded?.readiness?.overall_pass_probability
+        ?? res.readiness_after;
+      if (res.created) {
+        jumpToUpcoming(reloaded?.sessions || []);
+        setAlertMsg(
+          `Smart Optimize: scheduled ${res.created} study slots `
+          + `(${res.weak_sessions_scheduled} priority for weak areas).`
+          + formatReadinessLine(res.readiness_before, after)
+          + (res.warning ? ` ${res.warning}` : '')
+        );
+      } else {
+        setAlertMsg(res.warning || 'Nothing to optimize — your timetable is already up to date.');
+      }
     } catch (err) {
       setAlertMsg(`Error: ${err.message}`);
     } finally {
@@ -75,11 +156,43 @@ export default function StudyPlanView() {
   };
 
   const handleSessionAction = async (id, status, shiftDays = 0) => {
+    setBusySessionId(id);
     try {
       await api.updateSession(id, { status, shift_days: shiftDays });
-      loadSessions();
+      await loadSessions({ silent: true });
     } catch (err) {
-      console.error(err);
+      setAlertMsg(`Could not update the session: ${err.message}`);
+    } finally {
+      setBusySessionId(null);
+    }
+  };
+
+  const openSkipModal = async (id, action) => {
+    setSkipModal({ id, action, preview: null, loading: true });
+    try {
+      const preview = await api.previewSessionSkip(id);
+      setSkipModal({ id, action, preview, loading: false });
+    } catch {
+      setSkipModal({ id, action, preview: null, loading: false });
+    }
+  };
+
+  const confirmSkipOrDelete = async () => {
+    if (!skipModal) return;
+    const { id, action } = skipModal;
+    setSkipModal(null);
+    setBusySessionId(id);
+    try {
+      if (action === 'delete') {
+        await api.deleteSession(id);
+      } else {
+        await api.updateSession(id, { status: 'skipped' });
+      }
+      await loadSessions({ silent: true });
+    } catch (err) {
+      setAlertMsg(`Could not change the session: ${err.message}`);
+    } finally {
+      setBusySessionId(null);
     }
   };
 
@@ -97,13 +210,31 @@ export default function StudyPlanView() {
   };
 
   const shiftDay = (days) => {
-    const d = new Date(selectedDate);
-    d.setDate(d.getDate() + days);
-    setSelectedDate(d.toISOString().slice(0, 10));
+    const d = parseDay(selectedDate);
+    d.setDate(d.getDate() + (viewMode === 'week' ? days * 7 : days));
+    setSelectedDate(localDateStr(d));
   };
 
+  const todayStr = localDateStr();
+  const weekRange = getWeekRange(selectedDate);
+  const visibleSessions = sessions.filter((session) => {
+    const day = sessionDate(session);
+    if (viewMode === 'day') return day === selectedDate;
+    return day >= weekRange.start && day <= weekRange.end;
+  });
+  const nextUpcoming = sessions.find(isUpcomingSession) || null;
+  const reportWeakTopics = reportData?.weak_topics
+    ?? reportData?.critical_topics
+    ?? [];
+
   return (
-    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+    <div className="animate-fade-in" style={{
+      display: 'flex',
+      flexDirection: 'column',
+      gap: '2rem',
+      opacity: refreshing ? 0.85 : 1,
+      transition: 'opacity 0.2s ease',
+    }} aria-busy={refreshing}>
       {/* 1. Header Frame */}
       <div className="corner-frame" style={{
         padding: '2rem',
@@ -162,7 +293,7 @@ export default function StudyPlanView() {
         </div>
 
         {alertMsg && (
-          <div style={{
+          <div className="animate-fade-in" aria-live="polite" style={{
             marginTop: '1.25rem',
             padding: '0.75rem 1rem',
             backgroundColor: 'var(--bg-surface-lowest)',
@@ -183,6 +314,9 @@ export default function StudyPlanView() {
           </div>
         )}
       </div>
+
+      <ReadinessBlock readiness={readiness} />
+      <SubjectPassCards readiness={readiness} />
 
       {/* 2. Controls & Date Navigation Bar */}
       <div className="corner-frame" style={{
@@ -223,14 +357,16 @@ export default function StudyPlanView() {
             className="btn-tech-outline"
             onClick={() => shiftDay(-1)}
             style={{ padding: '0.35rem 0.65rem' }}
-            title="Previous Day"
+            title={viewMode === 'week' ? 'Previous Week' : 'Previous Day'}
           >
             <ChevronLeft size={16} />
           </button>
           <input
             type="date"
             value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
+            onChange={(e) => {
+              if (e.target.value) setSelectedDate(e.target.value);
+            }}
             className="tech-input"
             style={{ width: '150px', padding: '0.35rem 0.5rem', textAlign: 'center' }}
           />
@@ -238,13 +374,13 @@ export default function StudyPlanView() {
             className="btn-tech-outline"
             onClick={() => shiftDay(1)}
             style={{ padding: '0.35rem 0.65rem' }}
-            title="Next Day"
+            title={viewMode === 'week' ? 'Next Week' : 'Next Day'}
           >
             <ChevronRight size={16} />
           </button>
           <button
             className="btn-tech-outline"
-            onClick={() => setSelectedDate(new Date().toISOString().slice(0, 10))}
+            onClick={() => setSelectedDate(localDateStr())}
             style={{ fontSize: '0.75rem', padding: '0.35rem 0.75rem' }}
           >
             Today
@@ -252,7 +388,7 @@ export default function StudyPlanView() {
         </div>
 
         <div className="tag-mono" style={{ fontWeight: 700 }}>
-          {sessions.length} SESSION{sessions.length !== 1 ? 'S' : ''} {viewMode === 'day' ? 'ON THIS DAY' : 'TOTAL'}
+          {visibleSessions.length} SESSION{visibleSessions.length !== 1 ? 'S' : ''} {viewMode === 'day' ? 'ON THIS DAY' : 'THIS WEEK'}
         </div>
       </div>
 
@@ -279,17 +415,16 @@ export default function StudyPlanView() {
             monday.setDate(base.getDate() + diffToMon);
 
             const dayNames = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
-            const todayStr = new Date().toISOString().slice(0, 10);
 
             return dayNames.map((dName, idx) => {
               const d = new Date(monday);
               d.setDate(monday.getDate() + idx);
-              const dateStr = d.toISOString().slice(0, 10);
+              const dateStr = localDateStr(d);
               const isSelected = dateStr === selectedDate;
               const isToday = dateStr === todayStr;
 
-              // Count sessions on this day if in weekly mode
-              const daySessionCount = sessions.filter(s => (s.date || s.scheduled_start?.slice(0, 10)) === dateStr).length;
+              // Count sessions on this day across the full plan.
+              const daySessionCount = sessions.filter(s => sessionDate(s) === dateStr).length;
 
               return (
                 <button
@@ -342,7 +477,7 @@ export default function StudyPlanView() {
               FETCHING REVISION SESSIONS
             </div>
           </div>
-        ) : sessions.length === 0 ? (
+        ) : visibleSessions.length === 0 ? (
           <div className="corner-frame" style={{ padding: '3.5rem 2rem', textAlign: 'center' }}>
             <span className="corner-bracket top-left">┌</span>
             <span className="corner-bracket top-right">┐</span>
@@ -351,18 +486,39 @@ export default function StudyPlanView() {
 
             <Calendar size={36} style={{ margin: '0 auto 1rem', opacity: 0.4 }} />
             <h3 style={{ textTransform: 'uppercase', marginBottom: '0.5rem' }}>
-              No Sessions Scheduled for {selectedDate}
+              {viewMode === 'week' ? 'No Sessions This Week' : `No Sessions Scheduled for ${selectedDate}`}
             </h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', maxWidth: '500px', margin: '0 auto 1.5rem' }}>
-              Your syllabus has no study blocks for this day. Click Smart Optimize to generate or rebalance your calendar slots.
+              {nextUpcoming
+                ? `Next up: ${sessionDate(nextUpcoming)} at ${nextUpcoming.time || nextUpcoming.scheduled_start?.slice(11, 16)} · ${nextUpcoming.subject_name} — ${nextUpcoming.topic_name}.`
+                : 'Your syllabus has no study blocks for this day. Click Smart Optimize to generate or rebalance your calendar slots.'}
             </p>
-            <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem' }}>
-              <button className="btn-lime" onClick={handleMLOptimize}>
-                Smart Optimize Plan
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+              {nextUpcoming && (
+                <button
+                  className="btn-lime"
+                  onClick={() => jumpToUpcoming(sessions)}
+                  disabled={actionLoading}
+                >
+                  Jump to Next Session
+                </button>
+              )}
+              <button
+                className={nextUpcoming ? 'btn-tech-outline' : 'btn-lime'}
+                onClick={handleMLOptimize}
+                disabled={actionLoading}
+              >
+                {actionLoading ? 'Optimising...' : 'Smart Optimize Plan'}
               </button>
-              <button className="btn-tech-outline" onClick={handleStandardGenerate}>
-                Regenerate Schedule
-              </button>
+              {!nextUpcoming && (
+                <button
+                  className="btn-tech-outline"
+                  onClick={handleStandardGenerate}
+                  disabled={actionLoading}
+                >
+                  Regenerate Schedule
+                </button>
+              )}
             </div>
           </div>
         ) : viewMode === 'week' ? (
@@ -373,10 +529,10 @@ export default function StudyPlanView() {
             gap: '1.25rem',
           }}>
             {(() => {
-              // Group sessions by date
+              // Group this week's sessions by date
               const groups = {};
-              sessions.forEach(s => {
-                const d = s.date || s.scheduled_start?.slice(0, 10) || 'Upcoming';
+              visibleSessions.forEach(s => {
+                const d = sessionDate(s) || 'Upcoming';
                 if (!groups[d]) groups[d] = [];
                 groups[d].push(s);
               });
@@ -405,7 +561,7 @@ export default function StudyPlanView() {
                       📅 {dateStr}
                     </span>
                     <span className="badge-tech lime" style={{ fontSize: '0.62rem' }}>
-                      {daySessions.length} SESSIONS
+                      {daySessions.length} SESSION{daySessions.length === 1 ? '' : 'S'}
                     </span>
                   </div>
 
@@ -413,6 +569,8 @@ export default function StudyPlanView() {
                     {daySessions.map(session => {
                       const isDone = session.status === 'completed';
                       const isSkipped = session.status === 'skipped';
+                      const startTime = session.time || session.scheduled_start?.slice(11, 16) || '--:--';
+                      const endTime = session.end_time || session.scheduled_end?.slice(11, 16);
                       return (
                         <div
                           key={session.id}
@@ -435,7 +593,7 @@ export default function StudyPlanView() {
                             {session.topic_name}
                           </div>
                           <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                            <span>⏰ {session.time || session.scheduled_start?.slice(11, 16) || '09:00'} ({session.duration_min || 60}m)</span>
+                            <span>⏰ {startTime}{endTime ? `–${endTime}` : ''} ({session.duration_min || 60}m)</span>
                             {session.is_weak_priority && (
                               <span style={{ color: '#b45309', fontWeight: 700 }}>🎯 WEAK FOCUS</span>
                             )}
@@ -451,10 +609,12 @@ export default function StudyPlanView() {
         ) : (
           /* Day View Grid */
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: '1.25rem' }}>
-            {sessions.map((session) => {
+            {visibleSessions.map((session) => {
               const isDone = session.status === 'completed';
               const isSkipped = session.status === 'skipped';
-              const timeDisplay = session.time || session.scheduled_start?.slice(11, 16) || '09:00';
+              const isBusy = busySessionId === session.id;
+              const timeDisplay = session.time || session.scheduled_start?.slice(11, 16) || '--:--';
+              const endDisplay = session.end_time || session.scheduled_end?.slice(11, 16);
               return (
                 <div
                   key={session.id}
@@ -463,10 +623,11 @@ export default function StudyPlanView() {
                     padding: '1.5rem',
                     backgroundColor: isDone ? 'var(--bg-surface-low)' : 'var(--bg-surface-lowest)',
                     borderLeft: `6px solid ${isDone ? '#15803d' : isSkipped ? '#b91c1c' : session.is_weak_priority ? '#b45309' : 'var(--primary)'}`,
-                    opacity: isDone || isSkipped ? 0.75 : 1,
+                    opacity: isBusy ? 0.6 : isDone || isSkipped ? 0.75 : 1,
                     display: 'flex',
                     flexDirection: 'column',
                     justifyContent: 'space-between',
+                    transition: 'opacity 0.2s ease, background-color 0.2s ease, border-color 0.2s ease',
                   }}
                 >
                   <span className="corner-bracket top-left">┌</span>
@@ -498,7 +659,7 @@ export default function StudyPlanView() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
                       <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                         <Clock size={13} />
-                        {timeDisplay} ({session.duration_min || 60} mins)
+                        {timeDisplay}{endDisplay ? `–${endDisplay}` : ''} ({session.duration_min || 60} mins)
                       </span>
                       <span>·</span>
                       <span>{session.date || selectedDate}</span>
@@ -517,6 +678,7 @@ export default function StudyPlanView() {
                       <button
                         className="btn-lime"
                         onClick={() => handleSessionAction(session.id, 'completed')}
+                        disabled={isBusy}
                         style={{ fontSize: '0.72rem', padding: '0.35rem 0.75rem' }}
                       >
                         <Check size={13} strokeWidth={3} />
@@ -525,6 +687,7 @@ export default function StudyPlanView() {
                       <button
                         className="btn-tech-outline"
                         onClick={() => handleSessionAction(session.id, 'scheduled', 1)}
+                        disabled={isBusy}
                         style={{ fontSize: '0.72rem', padding: '0.35rem 0.75rem' }}
                       >
                         <FastForward size={13} />
@@ -532,10 +695,20 @@ export default function StudyPlanView() {
                       </button>
                       <button
                         className="btn-tech-outline"
-                        onClick={() => handleSessionAction(session.id, 'skipped')}
+                        onClick={() => openSkipModal(session.id, 'skip')}
+                        disabled={isBusy}
                         style={{ fontSize: '0.72rem', padding: '0.35rem 0.75rem', color: '#991b1b' }}
                       >
                         <span>Skip</span>
+                      </button>
+                      <button
+                        className="btn-tech-outline"
+                        onClick={() => openSkipModal(session.id, 'delete')}
+                        disabled={isBusy}
+                        style={{ fontSize: '0.72rem', padding: '0.35rem 0.75rem' }}
+                      >
+                        <Trash2 size={13} />
+                        <span>Delete</span>
                       </button>
                     </div>
                   )}
@@ -586,10 +759,20 @@ export default function StudyPlanView() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', fontFamily: 'var(--font-mono)', fontSize: '0.82rem' }}>
                 <div style={{ padding: '1rem', backgroundColor: 'var(--bg-surface-low)', border: '1.5px solid var(--border-strong)' }}>
                   <div className="tag-mono" style={{ marginBottom: '0.5rem' }}>OVERVIEW</div>
-                  <div>Topics needing more attention: <strong>{reportData.weak_topics?.length ?? 0}</strong></div>
+                  <div>Topics needing more attention: <strong>{reportData.summary?.critical_count ?? reportWeakTopics.length}</strong></div>
                   <div style={{ marginTop: '0.35rem' }}>
-                    Priority revision slots scheduled: <strong>{reportData.priority_slots ?? 4}</strong>
+                    Priority revision slots scheduled: <strong>{reportData.priority_slots ?? 0}</strong>
                   </div>
+                  <div style={{ marginTop: '0.35rem' }}>
+                    Topics analysed: <strong>{reportData.summary?.total_topics ?? reportData.topics_analyzed ?? 0}</strong>
+                    {' · '}
+                    Mastered: <strong>{reportData.summary?.mastered_count ?? reportData.mastered_topics?.length ?? 0}</strong>
+                  </div>
+                  {reportData.summary?.top_subject_at_risk && (
+                    <div style={{ marginTop: '0.35rem' }}>
+                      Highest risk subject: <strong>{reportData.summary.top_subject_at_risk}</strong>
+                    </div>
+                  )}
                   <div style={{ marginTop: '0.35rem', color: 'var(--text-secondary)' }}>
                     The AI analyses your quiz scores and study hours to flag topics where more revision will make the biggest difference.
                   </div>
@@ -597,12 +780,14 @@ export default function StudyPlanView() {
 
                 <div>
                   <div className="tag-mono" style={{ marginBottom: '0.5rem' }}>TOPICS TO FOCUS ON:</div>
-                  {reportData.weak_topics && reportData.weak_topics.length > 0 ? (
+                  {reportWeakTopics.length > 0 ? (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                      {reportData.weak_topics.map((t, idx) => (
+                      {reportWeakTopics.map((t, idx) => (
                         <div key={idx} style={{ padding: '0.65rem 0.85rem', border: '1px solid var(--border-strong)', backgroundColor: 'var(--bg-surface-lowest)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span><strong>{t.subject}</strong> — {t.topic}</span>
-                          <span className="badge-tech warning" style={{ fontSize: '0.62rem' }}>NEEDS WORK</span>
+                          <span><strong>{t.subject ?? t.subject_name}</strong> — {t.topic ?? t.name}</span>
+                          <span className="badge-tech warning" style={{ fontSize: '0.62rem' }}>
+                            NEEDS WORK{t.weakness_score != null ? ` ${Math.round(t.weakness_score)}/100` : ''}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -625,6 +810,12 @@ export default function StudyPlanView() {
           </div>
         </div>
       )}
+
+      <SkipImpactModal
+        skipModal={skipModal}
+        onKeep={() => setSkipModal(null)}
+        onConfirm={confirmSkipOrDelete}
+      />
     </div>
   );
 }

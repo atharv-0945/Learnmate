@@ -24,7 +24,7 @@
    - Real-time progress mastery bars showing current mastery status.
 
 4. **🧠 AI-Powered Quizzes & Online Mastery (IRT)**
-   - Topic-focused multiple choice questions generated dynamically via Google Gemini AI (`gemini-1.5-flash-latest`).
+   - Topic-focused multiple choice questions generated dynamically via Google Gemini AI (primary), with automatic Groq fallback and offline templates if both providers are unavailable.
    - Question response caching to conserve quota and minimize latency.
    - Bayesian / Item Response Theory (IRT) online mastery updates via single-step SGD:
      $$\theta \leftarrow \theta + \eta \cdot (y - \sigma(\theta - b))$$
@@ -44,61 +44,140 @@
 
 ---
 
+## 📋 Prerequisites
+
+Install these before starting:
+
+- **Git**
+- **Python 3.10+** (3.11 or 3.12 recommended)
+- **Node.js 20.19+ or 22.12+** with npm
+- A free **Gemini** and/or **Groq** API key for AI features
+
+---
+
 ## 🛠 Quick Start Guide for Collaborators
 
 ### 1. Clone the Repository
+
 ```bash
-git clone <YOUR_REPO_URL>
-cd aiml_proj_cie3
+git clone https://github.com/atharv-0945/Learmate.git
+cd Learnmate
 ```
 
+> A fresh clone creates a folder named `Learnmate`. If you cloned into a different folder name, `cd` into that folder instead.
+
 ### 2. Configure Environment Secrets
-Copy the environment template:
+
+**macOS / Linux / Git Bash:**
+
 ```bash
 cp learnmate_web/.env.example learnmate_web/.env
 ```
-Open `learnmate_web/.env` and paste your free keys:
-- **GROQ_API_KEY**: Get a free key at [console.groq.com/keys](https://console.groq.com/keys) (Used for sub-second doubt solver).
-- **GEMINI_API_KEY**: (Optional) Get a free key at [aistudio.google.com](https://aistudio.google.com/).
 
-> **Note:** `.env` and `learnmate.db` are automatically ignored by git. Never commit real keys.
+**Windows PowerShell:**
 
-### 3. Install Dependencies
-**Backend (Python virtual environment):**
-```bash
-python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On macOS/Linux:
-source .venv/bin/activate
-
-pip install -r learnmate_web/requirements.txt
+```powershell
+Copy-Item learnmate_web\.env.example learnmate_web\.env
 ```
 
-**Frontend (React Vite):**
+**Windows CMD:**
+
+```cmd
+copy learnmate_web\.env.example learnmate_web\.env
+```
+
+Open `learnmate_web/.env` and paste your free keys:
+
+- **GEMINI_API_KEY**: Get a free key at [aistudio.google.com](https://aistudio.google.com/). Used for quiz, flashcard, and topic extraction; also the fallback for doubt solving.
+- **GROQ_API_KEY**: Get a free key at [console.groq.com/keys](https://console.groq.com/keys). Used for the sub-second doubt solver and as the fallback for content generation.
+- **GEMINI_FALLBACK_MODELS**: Optional comma-separated model fallbacks (default: `gemini-3.5-flash,gemini-3.6-flash,gemini-flash-lite-latest`).
+
+> **Note:** `.env` and local `*.db` files are ignored by git. Never commit real API keys.
+
+### 3. Install Dependencies
+
+**Backend (Python virtual environment):**
+
+```bash
+python -m venv .venv
+```
+
+Activate it for your platform:
+
+**Windows PowerShell:**
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+**Windows CMD:**
+
+```cmd
+.venv\Scripts\activate
+```
+
+**macOS / Linux:**
+
+```bash
+source .venv/bin/activate
+```
+
+Then install the backend packages:
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r learnmate_web/requirements.txt
+```
+
+**Frontend (React + Vite):**
+
 ```bash
 cd learnmate_web/frontend
 npm install
 cd ../..
 ```
 
-### 4. Seed Initial Subjects & Topics (Optional)
-To populate subjects and topics into the database:
+### 4. Launch the Application
+
+**Windows — launch both services with one command:**
+
+```bash
+python learnmate_web/launch.py
+```
+
+**macOS / Linux — run the backend and frontend in separate terminals:**
+
+Terminal 1 (backend):
+
+```bash
+cd learnmate_web
+python -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
+```
+
+Terminal 2 (frontend):
+
+```bash
+cd learnmate_web/frontend
+npm run dev
+```
+
+Once running:
+
+- **Frontend App**: `http://localhost:5173`
+- **Backend Swagger Docs**: `http://127.0.0.1:8000/docs`
+
+### 5. Seed Initial Subjects & Topics (Optional)
+
+Start the app once first so the default user exists, then run this in a second terminal with the virtual environment activated:
+
 ```bash
 python learnmate_web/seed_aiml_data.py
 ```
 
-### 5. Launch Application
-Launch both backend and frontend with one command:
-```bash
-python learnmate_web/launch.py
-```
-- **Frontend App**: `http://localhost:5173`
-- **Backend Swagger Docs**: `http://127.0.0.1:8000/docs`
+### 6. Run the Test Suite
 
-### 6. Run Test Suite
 ```bash
-pytest learnmate_web/tests
+python -m pytest learnmate_web/tests
 ```
 
-```
+> The web app uses the pre-trained models in `models/`. To retrain models or run the full ML analysis pipeline, install the root `requirements.txt` and run `python run_pipeline.py`.

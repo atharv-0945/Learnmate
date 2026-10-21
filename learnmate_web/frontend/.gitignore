@@ -7,6 +7,25 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Environment files (never commit keys)
+.env
+.env.*
+!.env.example
+
+# Credentials and private keys
+.npmrc
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+credentials*.json
+service-account*.json
+client_secret*.json
+secrets.json
+*.secret
+*.secrets
+
 node_modules
 dist
 dist-ssr

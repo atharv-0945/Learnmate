@@ -226,14 +226,20 @@ def solve_doubt(
     # 2. Fallback to Gemini if configured
     if config.GEMINI_ENABLED:
         try:
-            from google import genai
-            client = genai.Client(api_key=config.GEMINI_API_KEY)
-            gemini_prompt = f"{system_prompt}\n\nStudent Question:\n{user_query}"
-            resp = client.models.generate_content(
-                model=config.GEMINI_MODEL,
-                contents=gemini_prompt,
+            # Reuse the shared Gemini client so model fallbacks, timeouts, and
+            # provider diagnostics stay consistent with quiz/flashcard generation.
+            from services.llm import _call_gemini_with_timeout, gemini_status
+
+            raw_text = _call_gemini_with_timeout(
+                user_query,
+                system_prompt=system_prompt,
+                timeout=30.0,
+                json_mode=False,
             )
-            raw_text = resp.text or ""
+            if not raw_text:
+                raise RuntimeError(
+                    (gemini_status().get("last_error") or "Gemini returned no response")
+                )
             parsed = _parse_groq_response(raw_text)
             latency_ms = int((time.perf_counter() - t0) * 1000)
             return {
@@ -241,7 +247,7 @@ def solve_doubt(
                 "answer": parsed["answer"],
                 "key_takeaways": parsed["key_takeaways"],
                 "practice_question": parsed["practice_question"],
-                "model_used": config.GEMINI_MODEL,
+                "model_used": gemini_status().get("active_model") or config.GEMINI_MODEL,
                 "provider": "gemini_fallback",
                 "latency_ms": latency_ms,
             }

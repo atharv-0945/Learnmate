@@ -587,7 +587,7 @@ export default function DoubtSolverView({ systemStatus, onStatusRefresh }) {
           }
         }, 150);
       } else {
-        setErrorMsg(res?.error || 'Unable to solve doubt. Please check your Groq API key.');
+        setErrorMsg(res?.error || 'Unable to solve doubt. Please check your Groq and Gemini API configuration.');
       }
     } catch (err) {
       setErrorMsg(err.message || 'Error occurred while contacting Groq inference engine.');
@@ -713,7 +713,8 @@ export default function DoubtSolverView({ systemStatus, onStatusRefresh }) {
         {/* Engine Status & Config */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
           <span className="tag-mono" style={{ color: 'var(--primary-deep)', fontWeight: 800, fontSize: '0.74rem' }}>
-            ENGINE: {activeSolution?.model_used ? activeSolution.model_used.toUpperCase() : 'QWEN-3.8-27B'} [LPU]
+            ENGINE: {activeSolution?.model_used ? activeSolution.model_used.toUpperCase() : 'QWEN-3.8-27B'}{' '}
+            [{activeSolution?.provider === 'gemini_fallback' ? 'GEMINI' : activeSolution?.provider === 'offline' ? 'OFFLINE' : 'LPU'}]
           </span>
 
           {history.length > 0 && (
@@ -1085,7 +1086,11 @@ export default function DoubtSolverView({ systemStatus, onStatusRefresh }) {
             <div style={{ flex: 1, minWidth: '260px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.55rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
                 <span className="badge-tech lime" style={{ fontWeight: 800 }}>
-                  ⚡ RESOLVED BY GROQ LPU
+                  {activeSolution.provider === 'gemini_fallback'
+                    ? '✨ RESOLVED BY GEMINI'
+                    : activeSolution.provider === 'offline'
+                      ? 'OFFLINE STUDY GUIDE'
+                      : '⚡ RESOLVED BY GROQ LPU'}
                 </span>
                 <span className="badge-tech" style={{ textTransform: 'uppercase' }}>
                   DEPTH: {activeSolution.depth || 'STANDARD'}
